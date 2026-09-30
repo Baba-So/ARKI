@@ -1,0 +1,6 @@
+{
+  "name": "ARCKI CAD - Studio CAO d'Architecture & Copilote IA",
+  "description": "Suite logicielle de conception assistée par ordinateur (CAO) 2D paramétrique et copilote IA spatial pour architectes et bureaux d'études.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
