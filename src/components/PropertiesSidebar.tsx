@@ -6,29 +6,38 @@ interface PropertiesSidebarProps {
   entity: CadEntity | null;
   selectedCount?: number;
   layers: CadLayer[];
+  allEntities?: CadEntity[];
   onUpdate: (updatedFields: Partial<CadEntity>) => void;
   onDelete: () => void;
   onDuplicate: () => void;
   onDeselect: () => void;
   onClose?: () => void;
   isFloating?: boolean;
+  onSnapOpeningToWall?: (entityId: string) => void;
 }
 
 export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
   entity,
   selectedCount = 1,
   layers,
+  allEntities = [],
   onUpdate,
   onDelete,
   onDuplicate,
   onDeselect,
   onClose,
   isFloating = false,
+  onSnapOpeningToWall,
 }) => {
   if (!entity) return null;
 
   // Active layer for entity
   const currentLayer = layers.find(l => l.id === entity.layerId) || layers[0];
+
+  // Host wall detection if entity is an opening
+  const hostWall = allEntities.find(
+    e => e.id === entity.hostWallId || (['wall', 'partition'].includes(e.type) && Math.hypot((entity.x1 + entity.x2)/2 - (e.x1 + e.x2)/2, (entity.y1 + entity.y2)/2 - (e.y1 + e.y2)/2) < 60)
+  );
 
   // Derived Geometric Calculations
   const dx = entity.x2 - entity.x1;
@@ -682,26 +691,286 @@ export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
               </button>
             </div>
 
-            {/* Door-specific properties if type === door */}
-            {entity.type === 'door' && (
-              <div className="bg-surface-container-low p-2 rounded border border-outline-variant/20 flex flex-col gap-1.5">
-                <span className="font-mono text-[9px] text-outline uppercase font-semibold">
-                  PARAMÈTRES DE DÉBATTEMENT
-                </span>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => onUpdate({ doorSwing: entity.doorSwing === 'left' ? 'right' : 'left' })}
-                    className="py-1 rounded bg-surface-container-lowest border border-outline-variant/30 text-xs font-mono flex items-center justify-center gap-1"
-                  >
-                    <span>Sens : {entity.doorSwing === 'left' ? 'Gauche' : 'Droite'}</span>
-                  </button>
-                  <button
-                    onClick={() => onUpdate({ doorAngle: (entity.doorAngle || 45) === 45 ? 90 : 45 })}
-                    className="py-1 rounded bg-surface-container-lowest border border-outline-variant/30 text-xs font-mono flex items-center justify-center gap-1"
-                  >
-                    <span>Angle : {entity.doorAngle || 45}°</span>
-                  </button>
+            {/* OUVERTURES ENCASTRÉES (PORTES & FENÊTRES) */}
+            {(entity.type === 'door' || entity.type === 'window') && (
+              <div className="bg-surface-container-low p-2.5 rounded-lg border border-amber-500/30 flex flex-col gap-2.5 shadow-xs">
+                {/* Header Encastrement Status */}
+                <div className="flex items-center justify-between border-b border-outline-variant/20 pb-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`material-symbols-outlined text-[17px] ${entity.type === 'door' ? 'text-amber-400' : 'text-sky-400'}`}>
+                      {entity.type === 'door' ? 'meeting_room' : 'window'}
+                    </span>
+                    <span className="font-mono text-[10px] font-bold text-on-surface uppercase">
+                      OUVERTURE TOUJOURS ENCASTRÉE
+                    </span>
+                  </div>
+                  <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono text-[9px] font-bold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>SUR MUR</span>
+                  </span>
                 </div>
+
+                {/* Host Wall Information Pill */}
+                <div className="p-2 rounded bg-surface-container-lowest border border-outline-variant/30 flex flex-col gap-1 text-[11px] font-mono">
+                  <div className="flex items-center justify-between text-outline text-[10px]">
+                    <span>MUR HÔTE :</span>
+                    <span className="text-on-surface font-semibold truncate max-w-[150px]">
+                      {hostWall ? hostWall.name : (entity.thickness === 72 ? 'Cloison Placostil' : 'Mur porteur')}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-outline text-[10px]">
+                    <span>ÉPAISSEUR MAÇONNERIE :</span>
+                    <span className="text-primary font-bold">
+                      {entity.thickness || (hostWall?.thickness || 200)} mm
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-outline text-[10px]">
+                    <span>ORIENTATION SEGMENT :</span>
+                    <span className="text-on-surface-variant font-semibold">
+                      {entity.angle || 0}°
+                    </span>
+                  </div>
+                  {onSnapOpeningToWall && (
+                    <button
+                      onClick={() => onSnapOpeningToWall(entity.id)}
+                      className="mt-1 w-full py-1 rounded bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 text-[9px] font-bold flex items-center justify-center gap-1 transition-colors"
+                      title="Recale et réaligne précisément l'ouverture dans l'axe du mur le plus proche"
+                    >
+                      <span className="material-symbols-outlined text-[13px]">tune</span>
+                      <span>Ré-encastrer sur le mur le plus proche</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Preset Widths (Largeur de passage / baie) */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-[10px] font-mono">
+                    <span className="text-outline uppercase font-semibold">
+                      LARGEUR DE {entity.type === 'door' ? 'PASSAGE' : 'BAIE'} :
+                    </span>
+                    <span className="text-on-surface font-bold">
+                      {entity.openingWidth || Math.round(lengthPx * 10)} mm
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {(entity.type === 'door'
+                      ? [600, 730, 830, 900, 1000, 1400]
+                      : [600, 900, 1200, 1400, 1800, 2400]
+                    ).map(w => {
+                      const curW = entity.openingWidth || Math.round(lengthPx * 10);
+                      const isAct = curW === w;
+                      return (
+                        <button
+                          key={w}
+                          onClick={() => {
+                            const curDx = entity.x2 - entity.x1;
+                            const curDy = entity.y2 - entity.y1;
+                            const curLen = Math.hypot(curDx, curDy) || 1;
+                            const ux = curDx / curLen;
+                            const uy = curDy / curLen;
+                            const midX = (entity.x1 + entity.x2) / 2;
+                            const midY = (entity.y1 + entity.y2) / 2;
+                            const halfLenPx = (w / 10) / 2;
+                            onUpdate({
+                              x1: Math.round((midX - ux * halfLenPx) * 10) / 10,
+                              y1: Math.round((midY - uy * halfLenPx) * 10) / 10,
+                              x2: Math.round((midX + ux * halfLenPx) * 10) / 10,
+                              y2: Math.round((midY + uy * halfLenPx) * 10) / 10,
+                              openingWidth: w,
+                              label: entity.type === 'door' ? `PORTE ${w}mm` : `FENÊTRE ${w}x${entity.height || 1250}`,
+                            });
+                          }}
+                          className={`py-1 rounded font-mono text-[10px] font-semibold border transition-all ${
+                            isAct
+                              ? entity.type === 'door'
+                                ? 'bg-amber-500/25 text-amber-300 border-amber-500/50 shadow-xs'
+                                : 'bg-sky-500/25 text-sky-300 border-sky-500/50 shadow-xs'
+                              : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface border-outline-variant/30'
+                          }`}
+                        >
+                          {w}mm {w === 900 && entity.type === 'door' ? 'PMR' : w >= 1800 ? 'Baie' : ''}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Glissière / Déplacement le long du mur */}
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-[9px] text-outline uppercase font-semibold">
+                    POSITION LE LONG DU MUR :
+                  </span>
+                  <div className="grid grid-cols-3 gap-1">
+                    <button
+                      onClick={() => {
+                        const curDx = entity.x2 - entity.x1;
+                        const curDy = entity.y2 - entity.y1;
+                        const curLen = Math.hypot(curDx, curDy) || 1;
+                        const ux = curDx / curLen;
+                        const uy = curDy / curLen;
+                        const shiftPx = 10; // -100mm
+                        onUpdate({
+                          x1: Math.round((entity.x1 - ux * shiftPx) * 10) / 10,
+                          y1: Math.round((entity.y1 - uy * shiftPx) * 10) / 10,
+                          x2: Math.round((entity.x2 - ux * shiftPx) * 10) / 10,
+                          y2: Math.round((entity.y2 - uy * shiftPx) * 10) / 10,
+                        });
+                      }}
+                      className="py-1 rounded bg-surface-container-lowest hover:bg-surface-container border border-outline-variant/30 text-xs font-mono flex items-center justify-center gap-1 text-on-surface-variant"
+                      title="Glisser de 100mm vers l'extrémité P1 du mur"
+                    >
+                      <span>◀ -100mm</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!hostWall) return;
+                        const wallDx = hostWall.x2 - hostWall.x1;
+                        const wallDy = hostWall.y2 - hostWall.y1;
+                        const wallLen = Math.hypot(wallDx, wallDy);
+                        if (wallLen < 10) return;
+                        const ux = wallDx / wallLen;
+                        const uy = wallDy / wallLen;
+                        const wallMidX = (hostWall.x1 + hostWall.x2) / 2;
+                        const wallMidY = (hostWall.y1 + hostWall.y2) / 2;
+                        const opWidth = entity.openingWidth || Math.round(lengthPx * 10) || 830;
+                        const halfLenPx = (opWidth / 10) / 2;
+                        onUpdate({
+                          x1: Math.round((wallMidX - ux * halfLenPx) * 10) / 10,
+                          y1: Math.round((wallMidY - uy * halfLenPx) * 10) / 10,
+                          x2: Math.round((wallMidX + ux * halfLenPx) * 10) / 10,
+                          y2: Math.round((wallMidY + uy * halfLenPx) * 10) / 10,
+                          angle: hostWall.angle || Math.round((Math.atan2(wallDy, wallDx) * 180 / Math.PI + 360) % 360),
+                          thickness: hostWall.thickness || 200,
+                        });
+                      }}
+                      className="py-1 rounded bg-surface-container-lowest hover:bg-surface-container border border-outline-variant/30 text-xs font-mono font-semibold flex items-center justify-center text-primary"
+                      title="Centrer exactement l'ouverture sur le mur"
+                    >
+                      <span>Centrer</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        const curDx = entity.x2 - entity.x1;
+                        const curDy = entity.y2 - entity.y1;
+                        const curLen = Math.hypot(curDx, curDy) || 1;
+                        const ux = curDx / curLen;
+                        const uy = curDy / curLen;
+                        const shiftPx = 10; // +100mm
+                        onUpdate({
+                          x1: Math.round((entity.x1 + ux * shiftPx) * 10) / 10,
+                          y1: Math.round((entity.y1 + uy * shiftPx) * 10) / 10,
+                          x2: Math.round((entity.x2 + ux * shiftPx) * 10) / 10,
+                          y2: Math.round((entity.y2 + uy * shiftPx) * 10) / 10,
+                        });
+                      }}
+                      className="py-1 rounded bg-surface-container-lowest hover:bg-surface-container border border-outline-variant/30 text-xs font-mono flex items-center justify-center gap-1 text-on-surface-variant"
+                      title="Glisser de 100mm vers l'extrémité P2 du mur"
+                    >
+                      <span>+100mm ▶</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Spécifique aux Portes : Sens, Inversion, Angle */}
+                {entity.type === 'door' && (
+                  <div className="flex flex-col gap-1.5 border-t border-outline-variant/20 pt-2">
+                    <span className="font-mono text-[9px] text-outline uppercase font-semibold">
+                      DÉBATTEMENT & SENS DU BATTANT :
+                    </span>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        onClick={() => onUpdate({ doorSwing: entity.doorSwing === 'left' ? 'right' : 'left' })}
+                        className="py-1 rounded bg-surface-container-lowest border border-outline-variant/30 text-[11px] font-mono flex items-center justify-center gap-1 hover:border-amber-400"
+                      >
+                        <span className="material-symbols-outlined text-[13px] text-amber-400">sync_alt</span>
+                        <span>Sens : {entity.doorSwing === 'left' ? 'Gauche' : 'Droit'}</span>
+                      </button>
+                      <button
+                        onClick={() => onUpdate({ flipSwing: !entity.flipSwing })}
+                        className={`py-1 rounded border text-[11px] font-mono flex items-center justify-center gap-1 ${
+                          entity.flipSwing
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                            : 'bg-surface-container-lowest border-outline-variant/30 text-on-surface hover:border-amber-400'
+                        }`}
+                        title="Inverser le sens d'ouverture intérieur / extérieur"
+                      >
+                        <span className="material-symbols-outlined text-[13px]">swap_vert</span>
+                        <span>Côté : {entity.flipSwing ? 'Extérieur' : 'Intérieur'}</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1 mt-0.5">
+                      {[90, 45, 0].map(ang => (
+                        <button
+                          key={ang}
+                          onClick={() => onUpdate({ doorAngle: ang })}
+                          className={`py-0.5 rounded text-[10px] font-mono font-semibold border ${
+                            (entity.doorAngle !== undefined ? entity.doorAngle : 90) === ang
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              : 'bg-surface-container-lowest text-outline hover:text-on-surface border-outline-variant/20'
+                          }`}
+                        >
+                          {ang === 0 ? 'Fermée (0°)' : `${ang}°`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Spécifique aux Fenêtres : Allège & Type */}
+                {entity.type === 'window' && (
+                  <div className="flex flex-col gap-1.5 border-t border-outline-variant/20 pt-2">
+                    <div className="flex items-center justify-between text-[10px] font-mono">
+                      <span className="text-outline uppercase font-semibold">HAUTEUR D'ALLÈGE :</span>
+                      <span className="text-sky-300 font-bold">{entity.sillHeight !== undefined ? entity.sillHeight : 900} mm</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {[
+                        { label: '0mm (Baie)', val: 0 },
+                        { label: '450mm', val: 450 },
+                        { label: '900mm (Std)', val: 900 },
+                      ].map(item => (
+                        <button
+                          key={item.val}
+                          onClick={() => onUpdate({ sillHeight: item.val })}
+                          className={`py-1 rounded text-[10px] font-mono font-semibold border ${
+                            (entity.sillHeight !== undefined ? entity.sillHeight : 900) === item.val
+                              ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                              : 'bg-surface-container-lowest text-outline hover:text-on-surface border-outline-variant/20'
+                          }`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] font-mono mt-1">
+                      <span className="text-outline uppercase font-semibold">TYPE MENUISERIE :</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1">
+                      <button
+                        onClick={() => onUpdate({ openingType: 'window_casement' })}
+                        className={`py-1 rounded text-[10px] font-mono font-semibold border ${
+                          entity.openingType !== 'window_sliding' && entity.openingType !== 'window_fixed'
+                            ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                            : 'bg-surface-container-lowest text-outline border-outline-variant/20'
+                        }`}
+                      >
+                        Battante (Frappe)
+                      </button>
+                      <button
+                        onClick={() => onUpdate({ openingType: 'window_sliding' })}
+                        className={`py-1 rounded text-[10px] font-mono font-semibold border ${
+                          entity.openingType === 'window_sliding'
+                            ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                            : 'bg-surface-container-lowest text-outline border-outline-variant/20'
+                        }`}
+                      >
+                        Coulissante (Baie)
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

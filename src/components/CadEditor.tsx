@@ -201,18 +201,24 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       materialIndex: 'MAT-02',
     },
 
-    // OUVERTURES
+    // OUVERTURES (Encastrées directement dans les murs et cloisons)
     {
       id: 'door-suite',
       name: 'Porte Suite Parentale (830mm)',
       type: 'door',
       layerId: 'ouvertures',
-      x1: 180,
-      y1: 452,
-      x2: 225,
-      y2: 497,
+      x1: 200,
+      y1: 460,
+      x2: 283,
+      y2: 460,
+      angle: 0,
+      thickness: 72,
+      hostWallId: 'partition-suite-salon',
+      openingWidth: 830,
       doorSwing: 'right',
-      doorAngle: 45,
+      doorAngle: 90,
+      flipSwing: false,
+      label: 'PORTE 830mm',
       materialIndex: 'MAT-07',
     },
     {
@@ -220,24 +226,50 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       name: 'Porte Salle d\'eau (730mm)',
       type: 'door',
       layerId: 'ouvertures',
-      x1: 424,
-      y1: 480,
-      x2: 459,
-      y2: 515,
+      x1: 420,
+      y1: 500,
+      x2: 420,
+      y2: 573,
+      angle: 90,
+      thickness: 72,
+      hostWallId: 'partition-suite-sde',
+      openingWidth: 730,
       doorSwing: 'left',
-      doorAngle: 45,
+      doorAngle: 90,
+      flipSwing: false,
+      label: 'PORTE 730mm',
       materialIndex: 'MAT-07',
     },
     {
       id: 'window-bay-salon',
-      name: 'Baie Coulissante 2800x2150',
+      name: 'Baie Coulissante 1800x2150',
       type: 'window',
       layerId: 'ouvertures',
-      x1: 117,
-      y1: 240,
-      x2: 126,
-      y2: 380,
-      label: 'BAIE COULISSANTE 2800x2150',
+      x1: 140,
+      y1: 220,
+      x2: 140,
+      y2: 400,
+      angle: 90,
+      thickness: 200,
+      hostWallId: 'wall-west',
+      openingWidth: 1800,
+      label: 'BAIE COULISSANTE 1800x2150',
+      materialIndex: 'MAT-06',
+    },
+    {
+      id: 'window-cuisine',
+      name: 'Fenêtre Cuisine 1200x1250',
+      type: 'window',
+      layerId: 'ouvertures',
+      x1: 550,
+      y1: 160,
+      x2: 670,
+      y2: 160,
+      angle: 0,
+      thickness: 200,
+      hostWallId: 'wall-north',
+      openingWidth: 1200,
+      label: 'FENÊTRE 1200x1250',
       materialIndex: 'MAT-06',
     },
 
@@ -457,13 +489,61 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       }
     }
 
+    // Openings (portes et fenêtres) : Encastrement obligatoire sur mur
+    if (block.category === 'menuiserie' || block.renderType === 'door' || block.renderType === 'window') {
+      const snap = findWallSnap(dropX, dropY, block.widthMm, 9999);
+      if (!snap) {
+        setCliHistory(prev => [
+          ...prev.slice(-3),
+          `_INSERT [${block.name}] impossible : Les ouvertures sont toujours encastrées sur les murs. Tracez d'abord un mur ou une cloison.`,
+          'Commande: '
+        ]);
+        return;
+      }
+      const isWin = block.renderType === 'window';
+      const newEntity: CadEntity = {
+        id: `${block.id}-${Date.now()}`,
+        name: `${block.name} encastrée (${snap.wall.type === 'partition' ? 'Cloison' : 'Mur'})`,
+        type: isWin ? 'window' : 'door',
+        layerId: 'ouvertures',
+        x1: snap.p1X,
+        y1: snap.p1Y,
+        x2: snap.p2X,
+        y2: snap.p2Y,
+        angle: snap.wallAngleDeg,
+        thickness: snap.wallThickness,
+        hostWallId: snap.wall.id,
+        openingWidth: block.widthMm,
+        doorSwing: activeDoorSwing || 'right',
+        doorAngle: 90,
+        flipSwing: activeFlipSide || false,
+        label: block.name,
+        subText: `${block.widthMm}x${block.heightMm} mm`,
+        materialIndex: isWin ? 'MAT-06' : 'MAT-07',
+        blockId: block.id,
+      };
+
+      recordHistory();
+      setEntities(prev => [...prev, newEntity]);
+      setSelectedIds([newEntity.id]);
+      if (autoOpenPropsOnSelect) {
+        setRightDockTab('props');
+      }
+      setCliHistory(prev => [
+        ...prev.slice(-3),
+        `_INSERT [${block.name}] encastrée sur "${snap.wall.name}" : L = ${block.widthMm} mm, Épaisseur = ${snap.wallThickness} mm, Angle = ${snap.wallAngleDeg}°`,
+        'Commande: '
+      ]);
+      return;
+    }
+
     const widthPx = Math.round(block.widthMm / 10);
     const heightPx = Math.round(block.heightMm / 10);
 
     const newEntity: CadEntity = {
       id: `${block.id}-${Date.now()}`,
       name: block.name,
-      type: block.category === 'menuiserie' ? (block.renderType === 'window' ? 'window' : 'door') : 'furniture',
+      type: 'furniture',
       layerId: block.defaultLayer,
       x1: dropX - Math.round(widthPx / 2),
       y1: dropY - Math.round(heightPx / 2),
@@ -550,6 +630,13 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   // Partition (Cloisons) dedicated settings
   const [partitionType, setPartitionType] = useState('Placostil 72mm (BA13)');
   const [partitionThickness, setPartitionThickness] = useState(72);
+
+  // Openings (Portes & Fenêtres) parametric settings & smart snap state
+  const [doorWidthSetting, setDoorWidthSetting] = useState(830);
+  const [windowWidthSetting, setWindowWidthSetting] = useState(1200);
+  const [activeDoorSwing, setActiveDoorSwing] = useState<'right' | 'left'>('right');
+  const [activeFlipSide, setActiveFlipSide] = useState<boolean>(false);
+  const [draggingOpeningId, setDraggingOpeningId] = useState<string | null>(null);
 
   // Dynamic AI Diff state
   const [isAiDiffApplied, setIsAiDiffApplied] = useState(false);
@@ -682,6 +769,144 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
   };
 
+  // Trouve le mur ou cloison le plus proche et calcule la projection exacte pour encastrer l'ouverture
+  const findWallSnap = (
+    px: number,
+    py: number,
+    openingWidthMm = 830,
+    maxDistance = 140
+  ): {
+    wall: CadEntity;
+    projX: number;
+    projY: number;
+    tClamped: number;
+    p1X: number;
+    p1Y: number;
+    p2X: number;
+    p2Y: number;
+    wallAngleDeg: number;
+    wallAngleRad: number;
+    wallThickness: number;
+    distance: number;
+    openingWidthMm: number;
+  } | null => {
+    const candidateWalls = entities.filter(e => {
+      if (e.type !== 'wall' && e.type !== 'partition') return false;
+      const l = getLayer(e.layerId);
+      return l.visible && !l.locked;
+    });
+
+    if (candidateWalls.length === 0) return null;
+
+    let bestSnap: any = null;
+    let minDistance = Infinity;
+
+    const openingLengthPx = openingWidthMm / 10;
+    const halfWidthPx = openingLengthPx / 2;
+
+    for (const wall of candidateWalls) {
+      const dx = wall.x2 - wall.x1;
+      const dy = wall.y2 - wall.y1;
+      const wallLen = Math.hypot(dx, dy);
+      if (wallLen < 15) continue;
+
+      const ux = dx / wallLen;
+      const uy = dy / wallLen;
+
+      // Projection scalaire de (px, py) le long du mur
+      const tRaw = ((px - wall.x1) * dx + (py - wall.y1) * dy) / (wallLen * wallLen);
+
+      // Clamp pour que l'ouverture reste entièrement encastrée dans la longueur du mur
+      let tClamped: number;
+      if (wallLen > openingLengthPx + 8) {
+        const minT = (halfWidthPx + 3) / wallLen;
+        const maxT = 1 - (halfWidthPx + 3) / wallLen;
+        tClamped = Math.max(minT, Math.min(maxT, tRaw));
+      } else {
+        tClamped = 0.5;
+      }
+
+      const projX = Math.round((wall.x1 + tClamped * dx) * 10) / 10;
+      const projY = Math.round((wall.y1 + tClamped * dy) * 10) / 10;
+      const dist = Math.hypot(px - projX, py - projY);
+
+      if (dist < minDistance) {
+        minDistance = dist;
+        const wallAngleRad = Math.atan2(dy, dx);
+        const wallAngleDeg = Math.round((wallAngleRad * 180 / Math.PI + 360) % 360);
+        const wallThickness = wall.thickness || (wall.type === 'partition' ? 72 : 200);
+
+        bestSnap = {
+          wall,
+          projX,
+          projY,
+          tClamped,
+          p1X: Math.round((projX - ux * halfWidthPx) * 10) / 10,
+          p1Y: Math.round((projY - uy * halfWidthPx) * 10) / 10,
+          p2X: Math.round((projX + ux * halfWidthPx) * 10) / 10,
+          p2Y: Math.round((projY + uy * halfWidthPx) * 10) / 10,
+          wallAngleDeg,
+          wallAngleRad,
+          wallThickness,
+          distance: dist,
+          openingWidthMm,
+        };
+      }
+    }
+
+    // Toujours retourner le mur le plus proche pour garantir l'encastrement strict sur maçonnerie
+    return bestSnap;
+  };
+
+  // Récupère toutes les ouvertures (portes et fenêtres) encastrées sur un mur ou cloison donné
+  const getOpeningsForWall = (wall: CadEntity): CadEntity[] => {
+    return entities.filter(ent => {
+      if (ent.type !== 'door' && ent.type !== 'window') return false;
+      const l = getLayer(ent.layerId);
+      if (!l.visible) return false;
+
+      // 1. Détection par hostWallId direct
+      if (ent.hostWallId === wall.id) return true;
+
+      // 2. Ou proximité géométrique du centre de l'ouverture avec l'axe du mur
+      const midX = (ent.x1 + ent.x2) / 2;
+      const midY = (ent.y1 + ent.y2) / 2;
+      const d = distToSegment(midX, midY, wall.x1, wall.y1, wall.x2, wall.y2);
+      const wallThickPx = (wall.thickness || 200) / 10;
+      return d <= (wallThickPx / 2 + 10);
+    });
+  };
+
+  // Ré-encastrer et réaligner précisément une ouverture sur le mur le plus proche
+  const handleSnapOpeningToWall = (openingId: string) => {
+    const op = entities.find(e => e.id === openingId);
+    if (!op) return;
+    const opMidX = (op.x1 + op.x2) / 2;
+    const opMidY = (op.y1 + op.y2) / 2;
+    const snap = findWallSnap(opMidX, opMidY, op.openingWidth || 830, 9999);
+    if (!snap) return;
+    recordHistory();
+    setEntities(prev => prev.map(e => {
+      if (e.id !== openingId) return e;
+      return {
+        ...e,
+        x1: snap.p1X,
+        y1: snap.p1Y,
+        x2: snap.p2X,
+        y2: snap.p2Y,
+        angle: snap.wallAngleDeg,
+        thickness: snap.wallThickness,
+        hostWallId: snap.wall.id,
+        wallPositionRatio: snap.tClamped,
+      };
+    }));
+    setCliHistory(prev => [
+      ...prev.slice(-3),
+      `_SNAP [${op.name}] ré-encastrée avec succès sur "${snap.wall.name}" (ép. ${snap.wallThickness}mm, angle ${snap.wallAngleDeg}°)`,
+      'Commande: '
+    ]);
+  };
+
   // Find CAD entity directly under the cursor center with CAD pickbox tolerance
   const getEntityAtPoint = (px: number, py: number, pickboxTolerance = 9): CadEntity | null => {
     // 1. Check dimensions, openings (doors & windows) - high precision
@@ -696,9 +921,17 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         const offset = ent.dimOffset || 16;
         const d2 = distToSegment(px, py, ent.x1 + perpX * offset, ent.y1 + perpY * offset, ent.x2 + perpX * offset, ent.y2 + perpY * offset);
         if (Math.min(d1, d2) <= pickboxTolerance + 6) return ent;
-      } else if (ent.type === 'door' || ent.type === 'window') {
+      } else if (ent.type === 'door') {
         const d = distToSegment(px, py, ent.x1, ent.y1, ent.x2, ent.y2);
-        if (d <= pickboxTolerance + 6) return ent;
+        const midX = (ent.x1 + ent.x2) / 2;
+        const midY = (ent.y1 + ent.y2) / 2;
+        const distCenter = Math.hypot(px - midX, py - midY);
+        const doorLen = Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1) || 80;
+        if (d <= pickboxTolerance + 8 || distCenter <= doorLen * 0.75) return ent;
+      } else if (ent.type === 'window') {
+        const d = distToSegment(px, py, ent.x1, ent.y1, ent.x2, ent.y2);
+        const th = (ent.thickness || 200) / 20;
+        if (d <= pickboxTolerance + th + 4) return ent;
       }
     }
     // 2. Check walls and partitions
@@ -822,6 +1055,30 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     } else if (hoveredEntityId) {
       setHoveredEntityId(null);
     }
+
+    // Glissement fluide d'une ouverture (porte / fenêtre) le long d'un mur
+    if (draggingOpeningId) {
+      const op = entities.find(ent => ent.id === draggingOpeningId);
+      if (op) {
+        const snap = findWallSnap(rawX, rawY, op.openingWidth || 830, 250);
+        if (snap) {
+          setEntities(prev => prev.map(ent => {
+            if (ent.id !== draggingOpeningId) return ent;
+            return {
+              ...ent,
+              x1: snap.p1X,
+              y1: snap.p1Y,
+              x2: snap.p2X,
+              y2: snap.p2Y,
+              angle: snap.wallAngleDeg,
+              thickness: snap.wallThickness,
+              hostWallId: snap.wall.id,
+              wallPositionRatio: snap.tClamped,
+            };
+          }));
+        }
+      }
+    }
   };
 
   // Handle Canvas Mouse Down
@@ -854,6 +1111,10 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           if (autoOpenPropsOnSelect) {
             setRightDockTab('props');
           }
+          // Glissement actif pour porte ou fenêtre encastrée
+          if (clickedEntity.type === 'door' || clickedEntity.type === 'window') {
+            setDraggingOpeningId(clickedEntity.id);
+          }
         }
         setIsBoxSelecting(false);
         setBoxStart(null);
@@ -870,11 +1131,16 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     }
   };
 
-  // Handle Canvas Mouse Up (Ends box selection)
+  // Handle Canvas Mouse Up (Ends box selection & opening dragging)
   const handleCanvasMouseUp = () => {
     if (isPanning) {
       setIsPanning(false);
       return;
+    }
+
+    if (draggingOpeningId) {
+      recordHistory();
+      setDraggingOpeningId(null);
     }
 
     if (isBoxSelecting && boxStart && boxCurrent) {
@@ -976,7 +1242,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       area: Number(areaM2.toFixed(2)),
       label: isClosed ? `POLYGONE (${pts.length} SOMMETS)` : `FORME (${pts.length} TRAITS)`,
       subText: isClosed ? `${areaM2.toFixed(2)} m² · P=${(perimeterMm / 1000).toFixed(2)}m` : `L=${(perimeterMm / 1000).toFixed(2)}m`,
-      hatchPattern: activeHatchPattern !== 'none' ? activeHatchPattern : 'none',
+      hatchPattern: activeHatchPattern,
       thickness: wallThickness,
       height: wallHeight,
     };
@@ -1098,56 +1364,102 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       }
     }
 
-    // 3. DOOR CREATION (P)
+    // 3. ENCASTREMENT AUTOMATIQUE DE PORTE SUR MUR (P)
     else if (activeTool === 'door') {
       const l = getLayer('ouvertures');
       if (l.locked) {
         alert("Le calque Menuiseries est verrouillé.");
         return;
       }
+
+      const doorWidth = doorWidthSetting || 830;
+      const snap = findWallSnap(cursorPos.x, cursorPos.y, doorWidth, 140);
+
+      if (!snap) {
+        setCliHistory(prev => [
+          ...prev.slice(-3),
+          `_DOOR : Aucun mur détecté à proximité. Cliquez sur un mur ou une cloison pour y encastrer la porte.`,
+          'Commande: ',
+        ]);
+        return;
+      }
+
       const newDoor: CadEntity = {
         id: `door-${Date.now()}`,
-        name: 'Porte Battante 830mm',
+        name: `Porte ${doorWidth}mm encastrée (${snap.wall.type === 'partition' ? 'Cloison' : 'Mur'})`,
         type: 'door',
         layerId: 'ouvertures',
-        x1: cursorPos.x,
-        y1: cursorPos.y,
-        x2: cursorPos.x + 45,
-        y2: cursorPos.y + 45,
-        doorSwing: 'right',
-        doorAngle: 45,
+        x1: snap.p1X,
+        y1: snap.p1Y,
+        x2: snap.p2X,
+        y2: snap.p2Y,
+        angle: snap.wallAngleDeg,
+        thickness: snap.wallThickness,
+        hostWallId: snap.wall.id,
+        openingWidth: doorWidth,
+        doorSwing: activeDoorSwing,
+        doorAngle: 90,
+        flipSwing: activeFlipSide,
+        label: `PORTE ${doorWidth}mm`,
         materialIndex: 'MAT-07',
       };
       recordHistory();
       setEntities(prev => [...prev, newDoor]);
       setSelectedIds([newDoor.id]);
+      if (autoOpenPropsOnSelect) {
+        setRightDockTab('props');
+      }
       setCliHistory(prev => [
         ...prev.slice(-3),
-        `_DOOR insérée en <${cursorPos.x * 10}, ${cursorPos.y * 10}>.`,
+        `_DOOR encastrée sur "${snap.wall.name}" : L = ${doorWidth} mm, Épaisseur = ${snap.wallThickness} mm, Angle = ${snap.wallAngleDeg}°`,
         'Commande: ',
       ]);
     }
 
-    // 4. WINDOW CREATION (F)
+    // 4. ENCASTREMENT AUTOMATIQUE DE FENÊTRE SUR MUR (F)
     else if (activeTool === 'window') {
       const l = getLayer('ouvertures');
       if (l.locked) return;
+
+      const winWidth = windowWidthSetting || 1200;
+      const snap = findWallSnap(cursorPos.x, cursorPos.y, winWidth, 140);
+
+      if (!snap) {
+        setCliHistory(prev => [
+          ...prev.slice(-3),
+          `_WINDOW : Aucun mur détecté à proximité. Cliquez sur un mur pour y encastrer la fenêtre.`,
+          'Commande: ',
+        ]);
+        return;
+      }
+
       const newWin: CadEntity = {
         id: `window-${Date.now()}`,
-        name: 'Fenêtre 1400x1250',
+        name: `Fenêtre ${winWidth}x1250 encastrée (${snap.wall.name})`,
         type: 'window',
         layerId: 'ouvertures',
-        x1: cursorPos.x - 35,
-        y1: cursorPos.y,
-        x2: cursorPos.x + 35,
-        y2: cursorPos.y,
-        label: 'FENÊTRE 1400x1250',
+        x1: snap.p1X,
+        y1: snap.p1Y,
+        x2: snap.p2X,
+        y2: snap.p2Y,
+        angle: snap.wallAngleDeg,
+        thickness: snap.wallThickness,
+        hostWallId: snap.wall.id,
+        openingWidth: winWidth,
+        label: `FENÊTRE ${winWidth}x1250`,
         materialIndex: 'MAT-06',
       };
       recordHistory();
       setEntities(prev => [...prev, newWin]);
       setSelectedIds([newWin.id]);
-      setCliHistory(prev => [...prev.slice(-3), `_WINDOW insérée.`, 'Commande: ']);
+      if (autoOpenPropsOnSelect) {
+        setRightDockTab('props');
+      }
+      setCliHistory(prev => [
+        ...prev.slice(-3),
+        `_WINDOW encastrée sur "${snap.wall.name}" : L = ${winWidth} mm, Épaisseur = ${snap.wallThickness} mm, Angle = ${snap.wallAngleDeg}°`,
+        'Commande: '
+      ]);
     }
 
     // 5. COTATION AUTOMATIQUE (D / _DIM)
@@ -1252,7 +1564,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           area: areaM2,
           label: `${widthMm} × ${heightMm} mm`,
           subText: `${areaM2.toFixed(2)} m²`,
-          hatchPattern: activeHatchPattern !== 'none' ? activeHatchPattern : 'none',
+          hatchPattern: activeHatchPattern,
           thickness: wallThickness,
           height: wallHeight,
         };
@@ -1392,6 +1704,22 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
         return;
+      }
+
+      // Space key: Inverser le sens d'ouverture de porte (Tirant Gauche / Droit)
+      if (e.code === 'Space') {
+        if (activeTool === 'door') {
+          e.preventDefault();
+          setActiveDoorSwing(prev => prev === 'left' ? 'right' : 'left');
+          return;
+        }
+        if (primarySelectedEntity && primarySelectedEntity.type === 'door') {
+          e.preventDefault();
+          handleUpdateSelectedFields({
+            doorSwing: primarySelectedEntity.doorSwing === 'left' ? 'right' : 'left'
+          });
+          return;
+        }
       }
 
       // Enter key: valider le polygone ou forme active
@@ -2008,6 +2336,96 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                 Cliquez sur une pièce ou une zone fermée pour appliquer le motif paramétrique
               </span>
             </>
+          ) : activeTool === 'door' ? (
+            <>
+              {/* Door Encastrée Sub-toolbar */}
+              <div className="flex items-center gap-1.5 bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant/30 text-xs">
+                <span className="material-symbols-outlined text-[15px] text-amber-400">meeting_room</span>
+                <span className="font-mono text-[10px] text-outline uppercase font-semibold">PORTE ENCASTRÉE :</span>
+                <div className="flex items-center gap-1">
+                  {[730, 830, 900, 1000].map((w) => (
+                    <button
+                      key={w}
+                      onClick={() => setDoorWidthSetting(w)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all border ${
+                        doorWidthSetting === w
+                          ? 'bg-amber-500/20 text-amber-300 font-bold border-amber-500/40 shadow-xs'
+                          : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface border-outline-variant/30'
+                      }`}
+                      title={`Largeur de passage : ${w} mm ${w === 900 ? '(Norme PMR)' : ''}`}
+                    >
+                      {w}mm {w === 900 ? 'PMR' : ''}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Sens du battant (Left / Right) */}
+              <div className="flex items-center gap-1 bg-surface-container-low px-1.5 py-0.5 rounded border border-outline-variant/30 text-xs">
+                <span className="font-mono text-[10px] text-outline">BATTANT:</span>
+                <button
+                  onClick={() => setActiveDoorSwing('right')}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-all ${
+                    activeDoorSwing === 'right' ? 'bg-primary/20 text-primary font-bold' : 'text-outline hover:text-on-surface'
+                  }`}
+                  title="Tirant Droit"
+                >
+                  Droit
+                </button>
+                <button
+                  onClick={() => setActiveDoorSwing('left')}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-all ${
+                    activeDoorSwing === 'left' ? 'bg-primary/20 text-primary font-bold' : 'text-outline hover:text-on-surface'
+                  }`}
+                  title="Tirant Gauche"
+                >
+                  Gauche
+                </button>
+                <button
+                  onClick={() => setActiveFlipSide(prev => !prev)}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-mono ml-0.5 border ${
+                    activeFlipSide ? 'bg-amber-400/20 text-amber-300 border-amber-400/40' : 'bg-surface-container border-outline-variant/20 text-outline hover:text-on-surface'
+                  }`}
+                  title="Inverser le sens d'ouverture intérieur / extérieur"
+                >
+                  Inverser
+                </button>
+              </div>
+
+              <span className="text-[10px] font-mono text-amber-300/90 hidden lg:inline ml-auto flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                <span>Encastrement et rotation automatique sur le mur le plus proche</span>
+              </span>
+            </>
+          ) : activeTool === 'window' ? (
+            <>
+              {/* Window Encastrée Sub-toolbar */}
+              <div className="flex items-center gap-1.5 bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant/30 text-xs">
+                <span className="material-symbols-outlined text-[15px] text-sky-400">window</span>
+                <span className="font-mono text-[10px] text-outline uppercase font-semibold">FENÊTRE ENCASTRÉE :</span>
+                <div className="flex items-center gap-1">
+                  {[600, 900, 1200, 1400, 1800, 2400].map((w) => (
+                    <button
+                      key={w}
+                      onClick={() => setWindowWidthSetting(w)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all border ${
+                        windowWidthSetting === w
+                          ? 'bg-sky-500/20 text-sky-300 font-bold border-sky-500/40 shadow-xs'
+                          : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface border-outline-variant/30'
+                      }`}
+                      title={`Largeur baie : ${w} mm`}
+                    >
+                      {w >= 2400 ? `Baie ${w}mm` : `${w}mm`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <span className="text-[10px] font-mono text-sky-300/90 hidden lg:inline ml-auto flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse"></span>
+                <span>Découpe et orientation automatique dans l'épaisseur de la maçonnerie</span>
+              </span>
+            </>
           ) : (
             <>
               {/* Wall Type Dropdown */}
@@ -2612,7 +3030,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   );
                 })}
 
-                {/* 3. WALLS & PARTITIONS */}
+                {/* 3. WALLS & PARTITIONS (avec découpes maçonnerie automatiques pour les ouvertures) */}
                 {entities.filter(e => ['wall', 'partition'].includes(e.type)).map(ent => {
                   const l = getLayer(ent.layerId);
                   if (!l.visible) return null;
@@ -2625,47 +3043,102 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   const angleDeg = (angleRad * 180) / Math.PI;
                   const isOrtho = Math.abs(ent.x2 - ent.x1) < 2 || Math.abs(ent.y2 - ent.y1) < 2;
 
+                  // Ouvertures encastrées sur ce mur
+                  const openings = getOpeningsForWall(ent);
+                  const maskId = `mask-wall-${ent.id}`;
+
                   return (
-                    <g 
-                      key={ent.id} 
-                      data-entity-id={ent.id} 
-                      onClick={(e) => handleEntityClick(e, ent)}
-                      className="cursor-pointer"
-                      opacity={l.locked ? 0.6 : 1}
-                    >
-                      {isOrtho ? (
-                        <rect
-                          x={Math.min(ent.x1, ent.x2)}
-                          y={Math.min(ent.y1, ent.y2)}
-                          width={Math.max(thick, Math.abs(ent.x2 - ent.x1))}
-                          height={Math.max(thick, Math.abs(ent.y2 - ent.y1))}
-                          fill={ent.type === 'wall' ? 'url(#wall-concrete-hatch)' : '#273647'}
-                          stroke={strokeColor}
-                          strokeWidth={isSelected ? 2.5 : isHovered ? 2.5 : ent.type === 'wall' ? 2 : 1.5}
-                        />
-                      ) : (
-                        <g transform={`translate(${ent.x1}, ${ent.y1}) rotate(${angleDeg})`}>
+                    <React.Fragment key={ent.id}>
+                      {/* Masque SVG de découpe de maçonnerie pour portes & fenêtres */}
+                      {openings.length > 0 && (
+                        <defs>
+                          <mask id={maskId} maskUnits="userSpaceOnUse">
+                            <rect x={-5000} y={-5000} width={10000} height={10000} fill="white" />
+                            {openings.map(op => {
+                              const opMidX = (op.x1 + op.x2) / 2;
+                              const opMidY = (op.y1 + op.y2) / 2;
+                              const opLen = Math.hypot(op.x2 - op.x1, op.y2 - op.y1) || (op.openingWidth ? op.openingWidth / 10 : 83);
+                              const opAngleDeg = (Math.atan2(op.y2 - op.y1, op.x2 - op.x1) * 180) / Math.PI;
+                              const cutThick = Math.max(thick * 1.6, 36);
+                              return (
+                                <g key={`cut-${op.id}`} transform={`translate(${opMidX}, ${opMidY}) rotate(${opAngleDeg})`}>
+                                  <rect x={-opLen / 2} y={-cutThick / 2} width={opLen} height={cutThick} fill="black" />
+                                </g>
+                              );
+                            })}
+                          </mask>
+                        </defs>
+                      )}
+
+                      <g 
+                        data-entity-id={ent.id} 
+                        onClick={(e) => handleEntityClick(e, ent)}
+                        className="cursor-pointer"
+                        opacity={l.locked ? 0.6 : 1}
+                        mask={openings.length > 0 ? `url(#${maskId})` : undefined}
+                      >
+                        {isOrtho ? (
                           <rect
-                            x={0}
-                            y={-thick / 2}
-                            width={len}
-                            height={thick}
+                            x={Math.min(ent.x1, ent.x2)}
+                            y={Math.min(ent.y1, ent.y2)}
+                            width={Math.max(thick, Math.abs(ent.x2 - ent.x1))}
+                            height={Math.max(thick, Math.abs(ent.y2 - ent.y1))}
                             fill={ent.type === 'wall' ? 'url(#wall-concrete-hatch)' : '#273647'}
                             stroke={strokeColor}
                             strokeWidth={isSelected ? 2.5 : isHovered ? 2.5 : ent.type === 'wall' ? 2 : 1.5}
                           />
-                        </g>
-                      )}
+                        ) : (
+                          <g transform={`translate(${ent.x1}, ${ent.y1}) rotate(${angleDeg})`}>
+                            <rect
+                              x={0}
+                              y={-thick / 2}
+                              width={len}
+                              height={thick}
+                              fill={ent.type === 'wall' ? 'url(#wall-concrete-hatch)' : '#273647'}
+                              stroke={strokeColor}
+                              strokeWidth={isSelected ? 2.5 : isHovered ? 2.5 : ent.type === 'wall' ? 2 : 1.5}
+                            />
+                          </g>
+                        )}
 
-                      {/* CAD Control Grips when selected */}
-                      {isSelected && (
-                        <g className="pointer-events-none">
-                          <rect x={ent.x1 - 3.5} y={ent.y1 - 3.5} width="7" height="7" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
-                          <rect x={ent.x2 - 3.5} y={ent.y2 - 3.5} width="7" height="7" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
-                          <rect x={(ent.x1 + ent.x2) / 2 - 3.5} y={(ent.y1 + ent.y2) / 2 - 3.5} width="7" height="7" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
-                        </g>
-                      )}
-                    </g>
+                        {/* CAD Control Grips when selected */}
+                        {isSelected && (
+                          <g className="pointer-events-none">
+                            <rect x={ent.x1 - 3.5} y={ent.y1 - 3.5} width="7" height="7" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
+                            <rect x={ent.x2 - 3.5} y={ent.y2 - 3.5} width="7" height="7" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
+                            <rect x={(ent.x1 + ent.x2) / 2 - 3.5} y={(ent.y1 + ent.y2) / 2 - 3.5} width="7" height="7" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
+                          </g>
+                        )}
+                      </g>
+
+                      {/* Tableaux de maçonnerie aux deux extrémités de chaque ouverture */}
+                      {openings.map(op => {
+                        const opAngleRad = Math.atan2(op.y2 - op.y1, op.x2 - op.x1);
+                        const halfThick = thick / 2;
+                        const perpX = -Math.sin(opAngleRad) * halfThick;
+                        const perpY = Math.cos(opAngleRad) * halfThick;
+                        return (
+                          <g key={`jambs-${op.id}`} className="pointer-events-none">
+                            <line
+                              x1={op.x1 - perpX}
+                              y1={op.y1 - perpY}
+                              x2={op.x1 + perpX}
+                              y2={op.y1 + perpY}
+                              stroke={strokeColor}
+                              strokeWidth={isSelected ? 2.5 : isHovered ? 2.2 : ent.type === 'wall' ? 2 : 1.5}
+                            />
+                            <line
+                              x1={op.x2 - perpX}
+                              y1={op.y2 - perpY}
+                              x2={op.x2 + perpX}
+                              y2={op.y2 + perpY}
+                              stroke={strokeColor}
+                              strokeWidth={isSelected ? 2.5 : isHovered ? 2.2 : ent.type === 'wall' ? 2 : 1.5}
+                            />
+                          </g>
+                        );
+                      })}
+                    </React.Fragment>
                   );
                 })}
 
@@ -2858,58 +3331,204 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   );
                 })}
 
-                {/* 4. DOORS & SWINGS */}
+                {/* 4. DOORS & SWINGS (Menuiseries architecturales encastrées) */}
                 {entities.filter(e => e.type === 'door').map(ent => {
                   const l = getLayer(ent.layerId);
                   if (!l.visible) return null;
                   const isSelected = selectedIds.includes(ent.id);
                   const isHovered = hoveredEntityId === ent.id && !isSelected;
                   const color = isSelected ? '#ffb95f' : isHovered ? '#38bdf8' : l.color;
-                  const rad = Math.abs(ent.x2 - ent.x1) || 40;
+                  
+                  const widthPx = Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1) || (ent.openingWidth ? ent.openingWidth / 10 : 83);
+                  const midX = (ent.x1 + ent.x2) / 2;
+                  const midY = (ent.y1 + ent.y2) / 2;
+                  const angleRad = Math.atan2(ent.y2 - ent.y1, ent.x2 - ent.x1);
+                  const angleDeg = (angleRad * 180) / Math.PI;
+                  const wallThick = ent.thickness ? (ent.thickness / 10) : 20;
+                  const swing = ent.doorSwing || 'right';
+                  const openAngle = ent.doorAngle !== undefined ? ent.doorAngle : 90;
+                  const flip = ent.flipSwing ? -1 : 1;
+                  const halfW = widthPx / 2;
+                  const halfThick = wallThick / 2;
+                  const frameW = 3.5;
+                  const leafLen = Math.max(10, widthPx - frameW * 2);
+                  
+                  const hx = swing === 'left' ? (-halfW + frameW) : (halfW - frameW);
+                  const leafRot = swing === 'left' ? (flip * -openAngle) : (180 + flip * openAngle);
+                  const leafRad = leafRot * Math.PI / 180;
+                  const tipX = hx + leafLen * Math.cos(leafRad);
+                  const tipY = leafLen * Math.sin(leafRad);
+                  const closedTipX = swing === 'left' ? (hx + leafLen) : (hx - leafLen);
 
                   return (
                     <g 
                       key={ent.id} 
                       data-entity-id={ent.id} 
                       onClick={(e) => handleEntityClick(e, ent)}
-                      transform={`translate(${ent.x1}, ${ent.y1})`}
-                      className="cursor-pointer"
+                      transform={`translate(${midX}, ${midY}) rotate(${angleDeg})`}
+                      className="cursor-pointer group"
                       opacity={l.locked ? 0.6 : 1}
                     >
-                      <line x1="0" y1="0" x2={rad} y2={rad} stroke={color} strokeWidth={isSelected ? 2.5 : 1.5} />
-                      <path d={`M 0 0 A ${rad} ${rad} 0 0 1 ${rad} ${rad}`} fill="none" stroke={color} strokeWidth="1.2" strokeDasharray="2 2" />
-                      <circle cx="0" cy="0" r="2.5" fill={color} />
+                      {/* Dormants / Bâti de porte (gauche et droite) */}
+                      <rect x={-halfW} y={-halfThick} width={frameW} height={wallThick} rx={0.8} fill="#1e293b" stroke={color} strokeWidth={1} />
+                      <rect x={halfW - frameW} y={-halfThick} width={frameW} height={wallThick} rx={0.8} fill="#1e293b" stroke={color} strokeWidth={1} />
+
+                      {/* Seuil de porte (pointillés discrets) */}
+                      <line x1={-halfW + frameW} y1={0} x2={halfW - frameW} y2={0} stroke={color} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.6} />
+
+                      {/* Arc de débattement du battant */}
+                      {openAngle > 0 && (
+                        <path
+                          d={`M ${closedTipX} 0 A ${leafLen} ${leafLen} 0 0 ${swing === 'left' ? (flip > 0 ? 0 : 1) : (flip > 0 ? 1 : 0)} ${tipX} ${tipY}`}
+                          fill="none"
+                          stroke={color}
+                          strokeWidth={isSelected ? 1.5 : 1}
+                          strokeDasharray="3 2.5"
+                          opacity={0.85}
+                        />
+                      )}
+
+                      {/* Vantail / Battant de porte */}
+                      <rect
+                        x={0}
+                        y={-1.8}
+                        width={leafLen}
+                        height={3.6}
+                        rx={0.8}
+                        fill={isSelected ? '#ffb95f' : color}
+                        fillOpacity={0.9}
+                        stroke={isSelected ? '#051424' : color}
+                        strokeWidth={0.8}
+                        transform={`translate(${hx}, 0) rotate(${leafRot})`}
+                      />
+
+                      {/* Pivot de rotation (Charnière) */}
+                      <circle cx={hx} cy={0} r={2.2} fill={color} stroke="#020914" strokeWidth={0.8} />
+
+                      {/* Étiquette d'ouverture */}
+                      <g transform={`translate(0, ${flip * (halfThick + 12)})`} className="pointer-events-none select-none">
+                        <rect x="-44" y="-7" width="88" height="14" rx="3" fill="#020914" fillOpacity="0.88" stroke={color} strokeWidth={0.6} />
+                        <text textAnchor="middle" y={3.5} fill={color} className="text-[8px] font-mono font-bold" fontFamily="JetBrains Mono">
+                          {ent.label || `PORTE ${ent.openingWidth || Math.round(widthPx * 10)}mm`}
+                        </text>
+                      </g>
+
+                      {/* Grips de sélection CAD */}
                       {isSelected && (
-                        <rect x="-4" y="-4" width="8" height="8" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
+                        <g className="pointer-events-none">
+                          <rect x={hx - 3.5} y={-3.5} width="7" height="7" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
+                          <circle cx={tipX} cy={tipY} r={3.5} fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
+                          <rect x={-3.5} y={-3.5} width="7" height="7" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
+                        </g>
                       )}
                     </g>
                   );
                 })}
 
-                {/* 5. WINDOWS & BAIES */}
+                {/* 5. WINDOWS & BAIES (Menuiseries vitrées encastrées) */}
                 {entities.filter(e => e.type === 'window').map(ent => {
                   const l = getLayer(ent.layerId);
                   if (!l.visible) return null;
                   const isSelected = selectedIds.includes(ent.id);
                   const isHovered = hoveredEntityId === ent.id && !isSelected;
                   const color = isSelected ? '#ffb95f' : isHovered ? '#38bdf8' : l.color;
-                  const h = Math.abs(ent.y2 - ent.y1) || 100;
+
+                  const widthPx = Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1) || (ent.openingWidth ? ent.openingWidth / 10 : 120);
+                  const midX = (ent.x1 + ent.x2) / 2;
+                  const midY = (ent.y1 + ent.y2) / 2;
+                  const angleRad = Math.atan2(ent.y2 - ent.y1, ent.x2 - ent.x1);
+                  const angleDeg = (angleRad * 180) / Math.PI;
+                  const wallThick = ent.thickness ? (ent.thickness / 10) : 20;
+                  const halfW = widthPx / 2;
+                  const halfThick = wallThick / 2;
+                  const isSliding = widthPx >= 160 || ent.name.toLowerCase().includes('baie') || ent.openingType === 'window_sliding';
 
                   return (
                     <g 
                       key={ent.id} 
                       data-entity-id={ent.id} 
                       onClick={(e) => handleEntityClick(e, ent)}
-                      className="cursor-pointer"
+                      transform={`translate(${midX}, ${midY}) rotate(${angleDeg})`}
+                      className="cursor-pointer group"
                       opacity={l.locked ? 0.6 : 1}
                     >
-                      <rect x={ent.x1} y={ent.y1} width="8" height={h} fill={color} opacity="0.9" />
-                      <line x1={ent.x1 + 8} y1={ent.y1} x2={ent.x1 + 8} y2={ent.y2} stroke={color} strokeWidth={isSelected ? 2 : isHovered ? 2 : 1.5} />
-                      <text x={ent.x1 - 10} y={ent.y1 + h / 2} transform={`rotate(-90 ${ent.x1 - 10} ${ent.y1 + h / 2})`} textAnchor="middle" fill={color} className="text-[9px] font-mono" fontFamily="JetBrains Mono">
-                        {ent.label || ent.name}
-                      </text>
-                      {(isSelected || isHovered) && (
-                        <rect x={ent.x1 - 1} y={ent.y1 - 1} width="10" height={h + 2} fill="none" stroke={isSelected ? '#ffb95f' : '#38bdf8'} strokeWidth="1.5" strokeDasharray="3 2" />
+                      {/* Dormant / Châssis extérieur */}
+                      <rect
+                        x={-halfW}
+                        y={-halfThick}
+                        width={widthPx}
+                        height={wallThick}
+                        fill="#0b1b2b"
+                        fillOpacity="0.9"
+                        stroke={color}
+                        strokeWidth={isSelected ? 2 : 1.2}
+                      />
+
+                      {/* Appui de fenêtre (Côté extérieur) */}
+                      <line
+                        x1={-halfW - 3}
+                        y1={-halfThick - 1.5}
+                        x2={halfW + 3}
+                        y2={-halfThick - 1.5}
+                        stroke={color}
+                        strokeWidth={1.8}
+                      />
+
+                      {/* Vitrage double ou vantaux coulissants */}
+                      {isSliding ? (
+                        <>
+                          {/* Vantail 1 */}
+                          <rect
+                            x={-halfW + 3}
+                            y={-halfThick * 0.75}
+                            width={halfW + 1}
+                            height={halfThick * 0.75}
+                            rx={1}
+                            fill="#38bdf8"
+                            fillOpacity="0.25"
+                            stroke="#38bdf8"
+                            strokeWidth={1}
+                          />
+                          {/* Vantail 2 */}
+                          <rect
+                            x={-2}
+                            y={0}
+                            width={halfW + 1}
+                            height={halfThick * 0.75}
+                            rx={1}
+                            fill="#38bdf8"
+                            fillOpacity="0.25"
+                            stroke="#38bdf8"
+                            strokeWidth={1}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          {/* Double vitrage thermique (2 lignes parallèles) */}
+                          <line x1={-halfW + 4} y1={-2} x2={halfW - 4} y2={-2} stroke="#38bdf8" strokeWidth={1.2} />
+                          <line x1={-halfW + 4} y1={2} x2={halfW - 4} y2={2} stroke="#38bdf8" strokeWidth={1.2} />
+                          {/* Meneau central pour les fenêtres larges */}
+                          {widthPx >= 80 && (
+                            <line x1={0} y1={-halfThick} x2={0} y2={halfThick} stroke={color} strokeWidth={1.4} />
+                          )}
+                        </>
+                      )}
+
+                      {/* Étiquette de la fenêtre */}
+                      <g transform={`translate(0, ${halfThick + 12})`} className="pointer-events-none select-none">
+                        <rect x="-55" y="-7" width="110" height="14" rx="3" fill="#020914" fillOpacity="0.88" stroke={color} strokeWidth={0.6} />
+                        <text textAnchor="middle" y={3.5} fill={color} className="text-[8px] font-mono font-bold" fontFamily="JetBrains Mono">
+                          {ent.label || `FENÊTRE ${ent.openingWidth || Math.round(widthPx * 10)}mm`}
+                        </text>
+                      </g>
+
+                      {/* Grips de sélection */}
+                      {isSelected && (
+                        <g className="pointer-events-none">
+                          <rect x={-halfW - 3} y={-3} width="6" height="6" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
+                          <rect x={halfW - 3} y={-3} width="6" height="6" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
+                          <rect x={-3} y={-3} width="6" height="6" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
+                        </g>
                       )}
                     </g>
                   );
@@ -3240,6 +3859,141 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     })()}
                   </g>
                 )}
+
+                {/* 7C. LIVE OPENINGS GHOST PREVIEW (Portes et fenêtres toujours encastrées sur les murs) */}
+                {(activeTool === 'door' || activeTool === 'window') && (() => {
+                  const reqWidth = activeTool === 'door' ? (doorWidthSetting || 830) : (windowWidthSetting || 1200);
+                  const snap = findWallSnap(cursorPos.x, cursorPos.y, reqWidth, 250);
+                  const isDoor = activeTool === 'door';
+                  const primaryColor = isDoor ? '#fbbf24' : '#38bdf8';
+
+                  if (snap) {
+                    const widthPx = reqWidth / 10;
+                    const wallThick = snap.wallThickness / 10;
+                    const halfW = widthPx / 2;
+                    const halfThick = wallThick / 2;
+                    const frameW = 3.5;
+                    const leafLen = Math.max(10, widthPx - frameW * 2);
+                    const swing = activeDoorSwing || 'right';
+                    const flip = activeFlipSide ? -1 : 1;
+                    const hx = swing === 'left' ? (-halfW + frameW) : (halfW - frameW);
+                    const leafRot = swing === 'left' ? (flip * -90) : (180 + flip * 90);
+                    const leafRad = leafRot * Math.PI / 180;
+                    const tipX = hx + leafLen * Math.cos(leafRad);
+                    const tipY = leafLen * Math.sin(leafRad);
+                    const closedTipX = swing === 'left' ? (hx + leafLen) : (hx - leafLen);
+
+                    return (
+                      <g id="ghost-opening-snap" className="pointer-events-none">
+                        {/* Rayon magnétique de projection vers le mur */}
+                        {Math.hypot(cursorPos.x - snap.projX, cursorPos.y - snap.projY) > 5 && (
+                          <line
+                            x1={cursorPos.x}
+                            y1={cursorPos.y}
+                            x2={snap.projX}
+                            y2={snap.projY}
+                            stroke={primaryColor}
+                            strokeWidth="1.2"
+                            strokeDasharray="3 3"
+                            opacity="0.8"
+                          />
+                        )}
+
+                        {/* Surbrillance de la découpe le long de la maçonnerie */}
+                        <line
+                          x1={snap.p1X}
+                          y1={snap.p1Y}
+                          x2={snap.p2X}
+                          y2={snap.p2Y}
+                          stroke={primaryColor}
+                          strokeWidth={wallThick + 4}
+                          opacity="0.25"
+                          strokeLinecap="butt"
+                        />
+
+                        {/* Rendu fantôme de l'ouverture encastrée orientée sur le mur */}
+                        <g transform={`translate(${snap.projX}, ${snap.projY}) rotate(${snap.wallAngleDeg})`}>
+                          {isDoor ? (
+                            <>
+                              {/* Bâti fantôme */}
+                              <rect x={-halfW} y={-halfThick} width={frameW} height={wallThick} fill="#1e293b" stroke={primaryColor} strokeWidth={1.5} />
+                              <rect x={halfW - frameW} y={-halfThick} width={frameW} height={wallThick} fill="#1e293b" stroke={primaryColor} strokeWidth={1.5} />
+                              
+                              {/* Seuil */}
+                              <line x1={-halfW + frameW} y1={0} x2={halfW - frameW} y2={0} stroke={primaryColor} strokeWidth={1} strokeDasharray="2 2" />
+
+                              {/* Arc fantôme */}
+                              <path
+                                d={`M ${closedTipX} 0 A ${leafLen} ${leafLen} 0 0 ${swing === 'left' ? (flip > 0 ? 0 : 1) : (flip > 0 ? 1 : 0)} ${tipX} ${tipY}`}
+                                fill="none"
+                                stroke={primaryColor}
+                                strokeWidth={1.5}
+                                strokeDasharray="3 2"
+                              />
+
+                              {/* Battant */}
+                              <rect
+                                x={0}
+                                y={-1.8}
+                                width={leafLen}
+                                height={3.6}
+                                rx={0.8}
+                                fill={primaryColor}
+                                fillOpacity={0.85}
+                                stroke="#020914"
+                                strokeWidth={0.8}
+                                transform={`translate(${hx}, 0) rotate(${leafRot})`}
+                              />
+
+                              {/* Charnière */}
+                              <circle cx={hx} cy={0} r={2.5} fill={primaryColor} />
+                            </>
+                          ) : (
+                            <>
+                              {/* Dormant fenêtre */}
+                              <rect
+                                x={-halfW}
+                                y={-halfThick}
+                                width={widthPx}
+                                height={wallThick}
+                                fill="#0b1b2b"
+                                fillOpacity="0.8"
+                                stroke={primaryColor}
+                                strokeWidth={1.5}
+                              />
+                              {/* Appui */}
+                              <line x1={-halfW - 3} y1={-halfThick - 1.5} x2={halfW + 3} y2={-halfThick - 1.5} stroke={primaryColor} strokeWidth={2} />
+                              {/* Vitrage double */}
+                              <line x1={-halfW + 4} y1={-2} x2={halfW - 4} y2={-2} stroke="#38bdf8" strokeWidth={1.4} />
+                              <line x1={-halfW + 4} y1={2} x2={halfW - 4} y2={2} stroke="#38bdf8" strokeWidth={1.4} />
+                            </>
+                          )}
+                        </g>
+
+                        {/* Badge HUD d'information d'encastrement */}
+                        <g transform={`translate(${snap.projX}, ${snap.projY - (wallThick / 2 + 28)})`}>
+                          <rect x="-110" y="-14" width="220" height="28" rx="4" fill="#011020" fillOpacity="0.94" stroke={primaryColor} strokeWidth="1.2" />
+                          <text x="0" y="-1" textAnchor="middle" fill={primaryColor} className="text-[10px] font-mono font-bold" fontFamily="JetBrains Mono">
+                            {isDoor ? `PORTE ${reqWidth}mm` : `FENÊTRE ${reqWidth}mm`} · ENCASTRÉE SUR MUR
+                          </text>
+                          <text x="0" y="9" textAnchor="middle" fill="#94a3b8" className="text-[8px] font-mono" fontFamily="JetBrains Mono">
+                            {snap.wall.name} · Ép. {snap.wallThickness}mm · {snap.wallAngleDeg}° · [Espace] Inverser
+                          </text>
+                        </g>
+                      </g>
+                    );
+                  }
+
+                  // Si aucun mur à proximité
+                  return (
+                    <g transform={`translate(${cursorPos.x}, ${cursorPos.y - 25})`} className="pointer-events-none">
+                      <rect x="-115" y="-12" width="230" height="24" rx="4" fill="#011020" fillOpacity="0.95" stroke="#f59e0b" strokeWidth="1" />
+                      <text x="0" y="4" textAnchor="middle" fill="#fbbf24" className="text-[9px] font-mono font-bold" fontFamily="JetBrains Mono">
+                        Approchez un mur pour encastrer l'ouverture
+                      </text>
+                    </g>
+                  );
+                })()}
 
                 {/* 8. BOX SELECTION MARQUIS (Window / Crossing) */}
                 {isBoxSelecting && boxStart && boxCurrent && (
@@ -3761,11 +4515,13 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     entity={primarySelectedEntity}
                     selectedCount={selectedIds.length}
                     layers={layers}
+                    allEntities={entities}
                     onUpdate={handleUpdateSelectedFields}
                     onDelete={handleDeleteSelected}
                     onDuplicate={handleDuplicateSelected}
                     onDeselect={() => setSelectedIds([])}
                     isFloating={false}
+                    onSnapOpeningToWall={handleSnapOpeningToWall}
                   />
                 </div>
               ) : (

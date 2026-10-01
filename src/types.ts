@@ -58,7 +58,7 @@ export interface MaterialDefinition {
 export interface CadEntity {
   id: string;
   name: string;
-  type: 'wall' | 'partition' | 'door' | 'window' | 'dim' | 'room' | 'furniture' | 'rect' | 'line' | 'polygon';
+  type: 'wall' | 'partition' | 'door' | 'window' | 'dim' | 'room' | 'furniture' | 'rect' | 'line' | 'polygon' | 'polyline';
   layerId: string;
   x1: number;
   y1: number;
@@ -84,6 +84,12 @@ export interface CadEntity {
   dimOffset?: number;
   dimOrientation?: 'aligned' | 'horizontal' | 'vertical';
   blockId?: string;
+  hostWallId?: string; // ID du mur hôte dans lequel l'ouverture est encastrée
+  openingWidth?: number; // Largeur de passage en mm (ex: 730, 830, 900, 1200, 1400)
+  flipSwing?: boolean; // Inverser le sens d'ouverture intérieur/extérieur
+  sillHeight?: number; // Hauteur d'allège en mm pour fenêtres
+  openingType?: 'door_single' | 'door_double' | 'door_pocket' | 'window_casement' | 'window_sliding' | 'window_fixed';
+  wallPositionRatio?: number; // Ratio 0..1 de position le long du mur hôte
 }
 
 export interface CadBlock {
