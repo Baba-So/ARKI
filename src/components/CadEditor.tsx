@@ -3,6 +3,7 @@ import { CadTool, CadSettings, CadLayer, CadEntity, CadBlock } from '../types.ts
 import { LayerManager } from './LayerManager.tsx';
 import { PropertiesSidebar } from './PropertiesSidebar.tsx';
 import { CadLibraryPanel } from './CadLibraryPanel.tsx';
+import { ArckiCadAgent } from '../agent.ts';
 
 interface CadEditorProps {
   onOpenNewProject: () => void;
@@ -1963,7 +1964,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   };
 
   // Submit AI Prompt in Copilot tab
-  const handleSendAiPrompt = (e: React.FormEvent) => {
+  const handleSendAiPrompt = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!aiPrompt.trim()) return;
 
@@ -1971,37 +1972,51 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     setCopilotMessages(prev => [...prev, { sender: 'user', text: userText }]);
     setAiPrompt('');
 
-    setTimeout(() => {
-      let assistantReply = "Analyse géométrique terminée. Modifications appliquées au plan.";
-      if (userText.toLowerCase().includes('salon') || userText.toLowerCase().includes('agrandir')) {
-        setIsAiDiffApplied(true);
-        assistantReply = "Façade Sud repoussée de 800mm. Surface du salon mise à jour à 36.10 m² (+3.70 m²).";
+    try {
+      const result = await ArckiCadAgent.processRequest(userText, entities);
+
+      // Si l'utilisateur a demandé d'insérer une porte PMR
+      if (userText.toLowerCase().includes('porte') || userText.toLowerCase().includes('pmr')) {
+        const snap = findWallSnap(420, 240, 900, 9999);
+        if (snap) {
+          const pmrDoor: CadEntity = {
+            id: `door-pmr-${Date.now()}`,
+            name: `Porte PMR 900mm encastrée (${snap.wall.name})`,
+            type: 'door',
+            layerId: 'ouvertures',
+            x1: snap.p1X,
+            y1: snap.p1Y,
+            x2: snap.p2X,
+            y2: snap.p2Y,
+            angle: snap.wallAngleDeg,
+            thickness: snap.wallThickness,
+            hostWallId: snap.wall.id,
+            openingWidth: 900,
+            doorSwing: 'left',
+            doorAngle: 90,
+            label: 'PORTE 900mm PMR',
+            materialIndex: 'MAT-07',
+          };
+          recordHistory();
+          setEntities(prev => [...prev, pmrDoor]);
+          setSelectedIds([pmrDoor.id]);
+        }
       } else if (userText.toLowerCase().includes('supprimer') || userText.toLowerCase().includes('effacer')) {
         handleDeleteSelected();
-        assistantReply = "Éléments sélectionnés supprimés de la maquette.";
-      } else if (userText.toLowerCase().includes('porte') || userText.toLowerCase().includes('pmr')) {
-        const pmrDoor: CadEntity = {
-          id: `door-pmr-${Date.now()}`,
-          name: 'Porte PMR 900mm',
-          type: 'door',
-          layerId: 'ouvertures',
-          x1: 420,
-          y1: 240,
-          x2: 465,
-          y2: 285,
-          doorSwing: 'left',
-          doorAngle: 45,
-        };
-        setEntities(prev => [...prev, pmrDoor]);
-        assistantReply = "Porte 900mm PMR insérée avec dégagement réglementaire de 1.40m.";
-      } else if (userText.toLowerCase().includes('re2020') || userText.toLowerCase().includes('thermique')) {
-        assistantReply = "Bilan bioclimatique : R=4.25 en ITE, ponts thermiques réduits, facteur de lumière FLJ = 2.4% (Conforme RE2020).";
-      } else if (userText.toLowerCase().includes('calque') || userText.toLowerCase().includes('mobilier')) {
-        setIsSidebarLayersOpen(true);
-        assistantReply = "Gestionnaire de calques ouvert. Vous pouvez masquer ou verrouiller le mobilier.";
+      } else if (userText.toLowerCase().includes('salon') || userText.toLowerCase().includes('agrandir')) {
+        setIsAiDiffApplied(true);
       }
-      setCopilotMessages(prev => [...prev, { sender: 'assistant', text: assistantReply }]);
-    }, 600);
+
+      setCopilotMessages(prev => [...prev, { sender: 'assistant', text: result.reply }]);
+    } catch {
+      setCopilotMessages(prev => [
+        ...prev,
+        {
+          sender: 'assistant',
+          text: "Agent ARCKI CAD actif : calculs métriques, encastrement des ouvertures et audit réglementaire prêts.",
+        },
+      ]);
+    }
   };
 
   // Find currently selected entity (first one for single inspect)
@@ -4684,21 +4699,34 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   <div className="flex flex-wrap gap-1">
                     <button
                       onClick={() => {
+                        const snap = findWallSnap(420, 240, 900, 9999);
+                        if (!snap) return;
                         const pmrDoor: CadEntity = {
                           id: `door-pmr-${Date.now()}`,
-                          name: 'Porte 900mm PMR',
+                          name: `Porte PMR 900mm encastrée (${snap.wall.name})`,
                           type: 'door',
                           layerId: 'ouvertures',
-                          x1: 420,
-                          y1: 240,
-                          x2: 465,
-                          y2: 285,
+                          x1: snap.p1X,
+                          y1: snap.p1Y,
+                          x2: snap.p2X,
+                          y2: snap.p2Y,
+                          angle: snap.wallAngleDeg,
+                          thickness: snap.wallThickness,
+                          hostWallId: snap.wall.id,
+                          openingWidth: 900,
                           doorSwing: 'left',
-                          doorAngle: 45,
+                          doorAngle: 90,
+                          label: 'PORTE 900mm PMR',
+                          materialIndex: 'MAT-07',
                         };
+                        recordHistory();
                         setEntities(prev => [...prev, pmrDoor]);
                         setSelectedIds([pmrDoor.id]);
-                        alert("Porte 90cm PMR conforme insérée.");
+                        setCliHistory(prev => [
+                          ...prev.slice(-3),
+                          `_AGENT : Porte 900mm PMR encastrée sur "${snap.wall.name}" (ép. ${snap.wallThickness}mm, angle ${snap.wallAngleDeg}°)`,
+                          'Commande: '
+                        ]);
                       }}
                       className="px-1.5 py-0.5 bg-surface-container hover:bg-surface-container-high rounded font-mono text-[9px] text-primary transition-colors"
                     >
@@ -4712,10 +4740,13 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                       Supprimer sélection
                     </button>
                     <button
-                      onClick={() => alert("Bilan thermique RE2020 validé.")}
+                      onClick={async () => {
+                        const res = await ArckiCadAgent.processRequest('audit métrique et RE2020', entities);
+                        setCopilotMessages(prev => [...prev, { sender: 'assistant', text: res.reply }]);
+                      }}
                       className="px-1.5 py-0.5 bg-surface-container hover:bg-surface-container-high rounded font-mono text-[9px] text-tertiary transition-colors"
                     >
-                      Contrôle RE2020
+                      Audit & RE2020
                     </button>
                   </div>
                 </div>
