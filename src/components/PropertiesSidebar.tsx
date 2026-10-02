@@ -223,7 +223,98 @@ export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
         {/* SUBTAB 1: GEOMETRY & ANGLES */}
         {activeSubTab === 'geom' && (
           <>
+            {/* ATTRIBUTE CERCLE : RAYON, DIAMÈTRE & SURFACE */}
+            {entity.type === 'circle' && (() => {
+              const curR = entity.radius ?? Math.hypot(entity.x2 - entity.x1, entity.y2 - entity.y1);
+              const rMm = Math.round(curR * 10);
+              const dMm = rMm * 2;
+              const areaM2 = (Math.PI * Math.pow(rMm / 1000, 2)).toFixed(2);
+
+              const handleRadiusChange = (newR_mm: number) => {
+                const validR_mm = Math.max(50, Math.min(25000, newR_mm));
+                const newRPx = validR_mm / 10;
+                onUpdate({
+                  radius: newRPx,
+                  x2: entity.x1 + newRPx,
+                  y2: entity.y1,
+                  area: Math.round(Math.PI * Math.pow(validR_mm / 1000, 2) * 100) / 100,
+                  name: `Cercle (R=${validR_mm}mm)`
+                });
+              };
+
+              return (
+                <div className="bg-surface-container-low p-2.5 rounded-lg border border-outline-variant/20 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[10px] text-sky-400 font-bold tracking-wider flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[14px]">radio_button_unchecked</span>
+                      <span>PARAMÈTRES DU CERCLE</span>
+                    </span>
+                    <span className="font-mono text-[10px] text-sky-300 font-bold">
+                      {areaM2} m²
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-surface-container-lowest p-1.5 rounded border border-outline-variant/30">
+                      <span className="text-[9px] font-mono text-outline block">RAYON (R)</span>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <input
+                          type="number"
+                          value={rMm}
+                          onChange={(e) => handleRadiusChange(Number(e.target.value))}
+                          className="w-full bg-transparent font-mono text-xs font-bold text-on-surface outline-none text-right"
+                          step="50"
+                        />
+                        <span className="text-[9px] font-mono text-outline">mm</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-surface-container-lowest p-1.5 rounded border border-outline-variant/30">
+                      <span className="text-[9px] font-mono text-outline block">DIAMÈTRE (⌀)</span>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <input
+                          type="number"
+                          value={dMm}
+                          onChange={(e) => handleRadiusChange(Number(e.target.value) / 2)}
+                          className="w-full bg-transparent font-mono text-xs font-bold text-on-surface outline-none text-right"
+                          step="100"
+                        />
+                        <span className="text-[9px] font-mono text-outline">mm</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <input
+                    type="range"
+                    min="100"
+                    max="6000"
+                    step="50"
+                    value={rMm}
+                    onChange={(e) => handleRadiusChange(Number(e.target.value))}
+                    className="w-full accent-sky-400 h-1.5 bg-surface-container rounded cursor-pointer"
+                  />
+
+                  <div className="grid grid-cols-4 gap-1">
+                    {[300, 500, 1000, 1500].map((preset) => (
+                      <button
+                        key={preset}
+                        onClick={() => handleRadiusChange(preset)}
+                        className={`py-0.5 rounded font-mono text-[9px] transition-colors border ${
+                          rMm === preset
+                            ? 'bg-sky-500 text-white font-bold border-sky-400'
+                            : 'bg-surface-container text-on-surface-variant hover:text-on-surface border-outline-variant/20'
+                        }`}
+                      >
+                        R {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* ATTRIBUTE 1: LENGTH (LONGUEUR) */}
+            {entity.type !== 'circle' && (
             <div className="bg-surface-container-low p-2.5 rounded-lg border border-outline-variant/20 flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <span className="font-mono text-[10px] text-primary font-bold tracking-wider flex items-center gap-1">
@@ -294,8 +385,10 @@ export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
                 ))}
               </div>
             </div>
+            )}
 
             {/* ATTRIBUTE 2: ANGLE & ORIENTATION */}
+            {entity.type !== 'circle' && (
             <div className="bg-surface-container-low p-2.5 rounded-lg border border-outline-variant/20 flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <span className="font-mono text-[10px] text-tertiary font-bold tracking-wider flex items-center gap-1">
@@ -374,6 +467,7 @@ export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
                 ))}
               </div>
             </div>
+            )}
 
             {/* ATTRIBUTE 3: THICKNESS & HEIGHT */}
             {['wall', 'partition', 'rect'].includes(entity.type) && (
@@ -454,8 +548,8 @@ export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
               </div>
             )}
 
-            {/* ATTRIBUTE 4: HACHURES PARAMÉTRIQUES (Pour pièces, rectangles, polygones et zones) */}
-            {['room', 'rect', 'wall', 'polygon'].includes(entity.type) && (
+            {/* ATTRIBUTE 4: HACHURES PARAMÉTRIQUES (Pour pièces, rectangles, cercles, polygones et zones) */}
+            {['room', 'rect', 'circle', 'wall', 'polygon'].includes(entity.type) && (
               <div className="bg-surface-container-low p-2.5 rounded-lg border border-outline-variant/20 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-[10px] text-tertiary font-bold tracking-wider flex items-center gap-1">

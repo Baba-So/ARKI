@@ -8,6 +8,7 @@ interface CommandPaletteProps {
   onSelectTool?: (tool: CadTool) => void;
   onOpenNewProject: () => void;
   onOpenExport: () => void;
+  onOpenTutorial?: () => void;
 }
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
@@ -16,6 +17,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onNavigate,
   onOpenNewProject,
   onOpenExport,
+  onOpenTutorial,
 }) => {
   const [query, setQuery] = useState('');
 
@@ -35,6 +37,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   if (!isOpen) return null;
 
   const actions = [
+    { id: 'view-tuto', title: 'Grand Cours & Tutoriel CAO de A à Z (11 modules)', category: 'Formation / Tuto', action: () => { onOpenTutorial?.(); onClose(); } },
     { id: 'proj-villa', title: 'Ouvrir Projet : Villa Horizon (RDC)', category: 'Projets', action: () => { onNavigate('editor'); onClose(); } },
     { id: 'proj-pins', title: 'Ouvrir Projet : Résidence Les Pins (R+2)', category: 'Projets', action: () => { onNavigate('editor'); onClose(); } },
     { id: 'proj-new', title: 'Créer un nouveau projet CAD (+)', category: 'Actions', action: () => { onOpenNewProject(); onClose(); } },

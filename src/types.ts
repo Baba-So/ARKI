@@ -2,6 +2,7 @@ export type ScreenType = 'editor' | 'dashboard' | 'auth';
 
 export type CadTool = 
   | 'select' 
+  | 'pan'
   | 'wall' 
   | 'partition' 
   | 'door' 
@@ -11,9 +12,14 @@ export type CadTool =
   | 'room' 
   | 'polyline' 
   | 'rect' 
+  | 'circle'
   | 'arc' 
   | 'cut' 
   | 'measure';
+
+export type WallSubTool = 'single' | 'continuous' | 'rect';
+export type ShapeSubTool = 'rect' | 'circle';
+export type PolylineSubTool = 'straight' | 'freehand' | 'curve';
 
 export interface CadLayer {
   id: string;
@@ -58,12 +64,14 @@ export interface MaterialDefinition {
 export interface CadEntity {
   id: string;
   name: string;
-  type: 'wall' | 'partition' | 'door' | 'window' | 'dim' | 'room' | 'furniture' | 'rect' | 'line' | 'polygon' | 'polyline';
+  type: 'wall' | 'partition' | 'door' | 'window' | 'dim' | 'room' | 'furniture' | 'rect' | 'circle' | 'line' | 'polygon' | 'polyline' | 'curve';
   layerId: string;
   x1: number;
   y1: number;
   x2: number;
   y2: number;
+  radius?: number; // Rayon en px pour les cercles
+  curvePoint?: { x: number; y: number }; // Point de contrôle / courbure pour arc et courbe
   points?: Array<{ x: number; y: number }>; // Sommets multiples pour polygone / polyligne
   isClosed?: boolean; // Polygone fermé ou chaîne ouverte
   thickness?: number;

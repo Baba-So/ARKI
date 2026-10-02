@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { CadTool, CadSettings, CadLayer, CadEntity, CadBlock } from '../types.ts';
+import { CadTool, CadSettings, CadLayer, CadEntity, CadBlock, WallSubTool, ShapeSubTool, PolylineSubTool } from '../types.ts';
 import { LayerManager } from './LayerManager.tsx';
 import { PropertiesSidebar } from './PropertiesSidebar.tsx';
 import { CadLibraryPanel } from './CadLibraryPanel.tsx';
@@ -8,10 +8,12 @@ import { ArckiCadAgent } from '../agent.ts';
 interface CadEditorProps {
   onOpenNewProject: () => void;
   onOpenExport: () => void;
+  onOpenTutorial?: () => void;
 }
 
 export const CadEditor: React.FC<CadEditorProps> = ({
   onOpenExport,
+  onOpenTutorial,
 }) => {
   // Navigation active tab in the left rail: 'plan' | '3d' | 'bim' | 'rendu' | 'config'
   const [activeRail, setActiveRail] = useState<'plan' | '3d' | 'bim' | 'rendu' | 'config'>('plan');
@@ -646,6 +648,28 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   // Interactive CAD Drawing & P1 Anchor state
   const [draftStart, setDraftStart] = useState<{ x: number; y: number } | null>(null);
 
+  // Outils & Sous-outils paramétriques
+  // 1. Mur : Mur droit (single) | Mur en continu (continuous) | 4 Murs rectangle (rect)
+  const [wallSubTool, setWallSubTool] = useState<WallSubTool>('single');
+  // 2. Cloison : Cloison droite (single) | Cloison continue (continuous) | 4 Cloisons rectangle (rect)
+  const [partitionSubTool, setPartitionSubTool] = useState<WallSubTool>('single');
+  // 3. Forme : Rectangle (rect) | Cercle (circle)
+  const [shapeSubTool, setShapeSubTool] = useState<ShapeSubTool>('rect');
+  // 4. Polygone / Tracé : Trait droit (straight) | Tracé libre main levée (freehand) | Courbe arc (curve)
+  const [polylineSubTool, setPolylineSubTool] = useState<PolylineSubTool>('straight');
+
+  // Tracé à main levée (Freehand)
+  const [isDrawingFreehand, setIsDrawingFreehand] = useState(false);
+  const [freehandPoints, setFreehandPoints] = useState<Array<{ x: number; y: number }>>([]);
+
+  // Tracé de courbe / Arc 3 points (P1, P2, Courbure)
+  const [curveP1, setCurveP1] = useState<{ x: number; y: number } | null>(null);
+  const [curveP2, setCurveP2] = useState<{ x: number; y: number } | null>(null);
+  const [curveStep, setCurveStep] = useState<0 | 1 | 2>(0);
+
+  // Popover latéral des sous-outils
+  const [activeFlyout, setActiveFlyout] = useState<'wall' | 'partition' | 'rect' | 'polyline' | null>(null);
+
   // Multi-point drafting for Polygons & Polylines
   const [polyPoints, setPolyPoints] = useState<Array<{ x: number; y: number }>>([]);
   const [rectMode, setRectMode] = useState<'zone' | 'walls'>('zone'); // Mode rectangle: Zone fermée ou 4 Murs
@@ -673,6 +697,152 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const [isSpaceHeld, setIsSpaceHeld] = useState(false);
+
+  // Synchronized refs for 60fps wheel zoom without stale closures
+  const canvasZoomRef = useRef(canvasZoom);
+  canvasZoomRef.current = canvasZoom;
+  const panOffsetRef = useRef(panOffset);
+  panOffsetRef.current = panOffset;
+
+  // Déplacement interactif d'entités sélectionnées (Translate / Move)
+  const [isDraggingEntities, setIsDraggingEntities] = useState(false);
+  const [dragStartPos, setDragStartPos] = useState<{ x: number; y: number } | null>(null);
+  const [dragInitialEntities, setDragInitialEntities] = useState<Map<string, CadEntity>>(new Map());
+  const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+
+  // Modification paramétrique par poignées (Grips / Handles)
+  const [activeGrip, setActiveGrip] = useState<{
+    entityId: string;
+    gripType: string;
+    initialEntity: CadEntity;
+  } | null>(null);
+  const [hoveredGrip, setHoveredGrip] = useState<{ entityId: string; gripType: string } | null>(null);
+
+  // Canvas Ref
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
+
+  // Fonctions de Zoom interactives (Molette & Boutons)
+  const handleZoomIn = () => {
+    if (!canvasContainerRef.current) return;
+    const rect = canvasContainerRef.current.getBoundingClientRect();
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    setCanvasZoom(prev => {
+      const newZoom = Math.min(prev * 1.25, 10);
+      setPanOffset(p => {
+        const cadX = (cx - p.x) / prev;
+        const cadY = (cy - p.y) / prev;
+        return { x: cx - cadX * newZoom, y: cy - cadY * newZoom };
+      });
+      return newZoom;
+    });
+  };
+
+  const handleZoomOut = () => {
+    if (!canvasContainerRef.current) return;
+    const rect = canvasContainerRef.current.getBoundingClientRect();
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    setCanvasZoom(prev => {
+      const newZoom = Math.max(prev / 1.25, 0.1);
+      setPanOffset(p => {
+        const cadX = (cx - p.x) / prev;
+        const cadY = (cy - p.y) / prev;
+        return { x: cx - cadX * newZoom, y: cy - cadY * newZoom };
+      });
+      return newZoom;
+    });
+  };
+
+  const handleZoomReset = () => {
+    setCanvasZoom(1);
+    setPanOffset({ x: 0, y: 0 });
+  };
+
+  const handleZoomFit = () => {
+    if (entities.length === 0 || !canvasContainerRef.current) return;
+    const rect = canvasContainerRef.current.getBoundingClientRect();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    entities.forEach(ent => {
+      const x1 = ent.x1 ?? 0;
+      const y1 = ent.y1 ?? 0;
+      const x2 = ent.x2 ?? (x1 + 60);
+      const y2 = ent.y2 ?? (y1 + 60);
+      minX = Math.min(minX, x1, x2);
+      minY = Math.min(minY, y1, y2);
+      maxX = Math.max(maxX, x1, x2);
+      maxY = Math.max(maxY, y1, y2);
+    });
+
+    if (minX === Infinity) return;
+    const contentW = maxX - minX + 120;
+    const contentH = maxY - minY + 120;
+    const fitZoom = Math.min(Math.max(Math.min((rect.width * 0.85) / contentW, (rect.height * 0.85) / contentH), 0.15), 4);
+    const midX = (minX + maxX) / 2;
+    const midY = (minY + maxY) / 2;
+    setCanvasZoom(fitZoom);
+    setPanOffset({
+      x: rect.width / 2 - midX * fitZoom,
+      y: rect.height / 2 - midY * fitZoom,
+    });
+  };
+
+  // Clic sur une poignée pour amorcer la modification
+  const handleGripMouseDown = (entity: CadEntity, gripType: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (e.button !== 0) return;
+    setActiveGrip({
+      entityId: entity.id,
+      gripType,
+      initialEntity: { ...entity },
+    });
+  };
+
+  // Zoom Molette centré sur la position réelle du curseur & Pan Trackpad
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const mouseScreenX = e.clientX - rect.left;
+      const mouseScreenY = e.clientY - rect.top;
+
+      const currentZoom = canvasZoomRef.current;
+      const currentPan = panOffsetRef.current;
+
+      // Panoramique fluide au pavé tactile (défilement horizontal/vertical sans pincement)
+      if (!e.ctrlKey && (Math.abs(e.deltaX) > 0 && Math.abs(e.deltaY) < 30)) {
+        setPanOffset({
+          x: currentPan.x - e.deltaX,
+          y: currentPan.y - e.deltaY,
+        });
+        return;
+      }
+
+      // Zoom professionnel centré sur le point sous la souris
+      const isPinch = e.ctrlKey;
+      const sensitivity = isPinch ? 0.015 : 0.0018;
+      const factor = Math.exp(-e.deltaY * sensitivity);
+      const newZoom = Math.min(Math.max(currentZoom * factor, 0.1), 10);
+
+      const cadX = (mouseScreenX - currentPan.x) / currentZoom;
+      const cadY = (mouseScreenY - currentPan.y) / currentZoom;
+
+      const newPanX = mouseScreenX - cadX * newZoom;
+      const newPanY = mouseScreenY - cadY * newZoom;
+
+      setCanvasZoom(newZoom);
+      setPanOffset({ x: newPanX, y: newPanY });
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+    };
+  }, []);
 
   // Snap detection state
   const [activeSnap, setActiveSnap] = useState<{ x: number; y: number; type: string } | null>(null);
@@ -721,9 +891,6 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       text: 'Proposition prête : 1 mur porteur déplacé (+800mm Y), 2 cloisons étirées, 3 cotes et surfaces recalculées (Salon: 32.4 → 36.1 m²).',
     },
   ]);
-
-  // Canvas Ref
-  const canvasContainerRef = useRef<HTMLDivElement>(null);
 
   // OSNAP Proximity Detection
   const detectSnap = (x: number, y: number) => {
@@ -945,7 +1112,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         if (d <= halfThick + pickboxTolerance) return ent;
       }
     }
-    // 3. Check furniture, rects, and polygons
+    // 3. Check furniture, rects, circles, curves, and polygons
     for (const ent of entities) {
       const l = getLayer(ent.layerId);
       if (!l.visible || l.locked) continue;
@@ -955,6 +1122,17 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         const minY = Math.min(ent.y1, ent.y2) - pickboxTolerance;
         const maxY = Math.max(ent.y1, ent.y2) + pickboxTolerance;
         if (px >= minX && px <= maxX && py >= minY && py <= maxY) return ent;
+      }
+      if (ent.type === 'circle') {
+        const r = ent.radius ?? Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1);
+        const distCenter = Math.hypot(px - ent.x1, py - ent.y1);
+        if (Math.abs(distCenter - r) <= pickboxTolerance + 6 || distCenter <= r) return ent;
+      }
+      if (ent.type === 'curve') {
+        const cp = ent.curvePoint ?? { x: (ent.x1 + ent.x2) / 2, y: (ent.y1 + ent.y2) / 2 };
+        const d1 = distToSegment(px, py, ent.x1, ent.y1, cp.x, cp.y);
+        const d2 = distToSegment(px, py, cp.x, cp.y, ent.x2, ent.y2);
+        if (Math.min(d1, d2) <= pickboxTolerance + 8) return ent;
       }
       if ((ent.type === 'polygon' || ent.type === 'polyline') && ent.points && ent.points.length > 1) {
         const pts = ent.points;
@@ -993,6 +1171,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
   // Handle Mouse movement on CAD canvas
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    // 1. Déplacement de la vue / Panoramique (Pan)
     if (isPanning) {
       setPanOffset({
         x: e.clientX - panStart.x,
@@ -1008,10 +1187,10 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     let x = Math.round(rawX);
     let y = Math.round(rawY);
 
-    // Snap-to-grid: Magnétisme à la grille 20px (pour les outils de tracé et de mesure)
+    // Snap-to-grid: Magnétisme à la grille 20px (pour les outils de tracé, mesure et modification)
     const gridStep = settings.gridSnapSize || 20;
-    const isDrawingOrMeasuring = ['partition', 'wall', 'dim', 'rect', 'line', 'measure', 'door', 'window', 'polyline'].includes(activeTool);
-    const isGridSnapActive = (settings.snapToGrid || settings.snap) && isDrawingOrMeasuring;
+    const isDrawingOrModifying = ['partition', 'wall', 'dim', 'rect', 'line', 'measure', 'door', 'window', 'polyline', 'select'].includes(activeTool);
+    const isGridSnapActive = (settings.snapToGrid || settings.snap) && isDrawingOrModifying;
 
     if (isGridSnapActive) {
       x = Math.round(rawX / gridStep) * gridStep;
@@ -1044,37 +1223,297 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
     setCursorPos({ x, y });
 
-    // Box selection update: alignée exactement sur le centre du curseur
+    // Capture des points de tracé libre (Freehand)
+    if (isDrawingFreehand) {
+      const lastPt = freehandPoints[freehandPoints.length - 1];
+      if (!lastPt || Math.hypot(x - lastPt.x, y - lastPt.y) >= 4) {
+        setFreehandPoints(prev => [...prev, { x, y }]);
+      }
+    }
+
+    // 2. MODIFICATION D'UNE POIGNÉE ACTIVE (Grip Stretch / Resize / Vertex Move)
+    if (activeGrip) {
+      const initial = activeGrip.initialEntity;
+      let targetX = x;
+      let targetY = y;
+
+      // Contrainte Orthogonale pour modification de mur/cloison/ligne
+      if (settings.ortho && ['wall', 'partition', 'line'].includes(initial.type)) {
+        if (activeGrip.gripType === 'p1') {
+          const dx = Math.abs(targetX - initial.x2);
+          const dy = Math.abs(targetY - initial.y2);
+          if (dx > dy) targetY = initial.y2;
+          else targetX = initial.x2;
+        } else if (activeGrip.gripType === 'p2') {
+          const dx = Math.abs(targetX - initial.x1);
+          const dy = Math.abs(targetY - initial.y1);
+          if (dx > dy) targetY = initial.y1;
+          else targetX = initial.x1;
+        }
+      }
+
+      setEntities(prev => prev.map(item => {
+        if (item.id !== activeGrip.entityId) return item;
+
+        // Murs, Cloisons, Lignes, Cotations
+        if (activeGrip.gripType === 'p1') {
+          const newLen = Math.round(Math.hypot(item.x2 - targetX, item.y2 - targetY) * 10);
+          return { ...item, x1: targetX, y1: targetY, lengthMm: newLen };
+        }
+        if (activeGrip.gripType === 'p2') {
+          const newLen = Math.round(Math.hypot(targetX - item.x1, targetY - item.y1) * 10);
+          return { ...item, x2: targetX, y2: targetY, lengthMm: newLen };
+        }
+        if (activeGrip.gripType === 'mid') {
+          const curMidX = (initial.x1 + initial.x2) / 2;
+          const curMidY = (initial.y1 + initial.y2) / 2;
+          const dx = targetX - curMidX;
+          const dy = targetY - curMidY;
+          return {
+            ...item,
+            x1: initial.x1 + dx,
+            y1: initial.y1 + dy,
+            x2: initial.x2 + dx,
+            y2: initial.y2 + dy,
+          };
+        }
+
+        // Pièces et Rectangles (Coins et arêtes étirables)
+        if (item.type === 'room' || item.type === 'rect') {
+          let rx1 = initial.x1;
+          let ry1 = initial.y1;
+          let rx2 = initial.x2;
+          let ry2 = initial.y2;
+
+          if (activeGrip.gripType === 'corner-tl') { rx1 = targetX; ry1 = targetY; }
+          else if (activeGrip.gripType === 'corner-tr') { rx2 = targetX; ry1 = targetY; }
+          else if (activeGrip.gripType === 'corner-br') { rx2 = targetX; ry2 = targetY; }
+          else if (activeGrip.gripType === 'corner-bl') { rx1 = targetX; ry2 = targetY; }
+          else if (activeGrip.gripType === 'edge-top') { ry1 = targetY; }
+          else if (activeGrip.gripType === 'edge-right') { rx2 = targetX; }
+          else if (activeGrip.gripType === 'edge-bottom') { ry2 = targetY; }
+          else if (activeGrip.gripType === 'edge-left') { rx1 = targetX; }
+
+          const wMm = Math.abs(rx2 - rx1) * 10;
+          const hMm = Math.abs(ry2 - ry1) * 10;
+          const newArea = Math.round((wMm * hMm) / 10000) / 100;
+          return {
+            ...item,
+            x1: rx1,
+            y1: ry1,
+            x2: rx2,
+            y2: ry2,
+            area: newArea,
+          };
+        }
+
+        // Polygones et traits multiples (déplacement de sommet)
+        if (activeGrip.gripType.startsWith('point-') && item.points) {
+          const idx = parseInt(activeGrip.gripType.replace('point-', ''), 10);
+          const nextPts = [...item.points];
+          nextPts[idx] = { x: targetX, y: targetY };
+          return { ...item, points: nextPts };
+        }
+
+        // Blocs mobiliers
+        if (item.type === 'furniture') {
+          if (activeGrip.gripType === 'mid') {
+            const bx1 = initial.x1;
+            const by1 = initial.y1;
+            const bx2 = initial.x2;
+            const by2 = initial.y2;
+            const curMidX = (bx1 + bx2) / 2;
+            const curMidY = (by1 + by2) / 2;
+            const dx = targetX - curMidX;
+            const dy = targetY - curMidY;
+            return {
+              ...item,
+              x1: bx1 + dx,
+              y1: by1 + dy,
+              x2: bx2 + dx,
+              y2: by2 + dy,
+            };
+          }
+        }
+
+        // Formes Circulaires (centre et rayon)
+        if (item.type === 'circle') {
+          if (activeGrip.gripType === 'radius') {
+            const newR = Math.max(5, Math.hypot(targetX - item.x1, targetY - item.y1));
+            const rMm = Math.round(newR * 10);
+            const areaM2 = Math.round(Math.PI * Math.pow(rMm / 1000, 2) * 100) / 100;
+            return {
+              ...item,
+              radius: newR,
+              x2: targetX,
+              y2: targetY,
+              area: areaM2,
+              label: `⌀ ${rMm * 2} mm`,
+              subText: `R: ${rMm} mm · ${areaM2.toFixed(2)} m²`,
+            };
+          }
+          if (activeGrip.gripType === 'center') {
+            const dx = targetX - initial.x1;
+            const dy = targetY - initial.y1;
+            return {
+              ...item,
+              x1: targetX,
+              y1: targetY,
+              x2: (initial.x2 ?? initial.x1) + dx,
+              y2: (initial.y2 ?? initial.y1) + dy,
+            };
+          }
+        }
+
+        // Courbes / Arcs Bézier
+        if (item.type === 'curve') {
+          if (activeGrip.gripType === 'p1') {
+            return { ...item, x1: targetX, y1: targetY };
+          }
+          if (activeGrip.gripType === 'p2') {
+            return { ...item, x2: targetX, y2: targetY };
+          }
+          if (activeGrip.gripType === 'control') {
+            return { ...item, curvePoint: { x: targetX, y: targetY } };
+          }
+        }
+
+        return item;
+      }));
+      return;
+    }
+
+    // 3. DÉPLACEMENT INTERACTIF EN GROUPE DES ÉLÉMENTS SÉLECTIONNÉS (Translate / Move)
+    if (isDraggingEntities && dragStartPos && dragInitialEntities.size > 0) {
+      let deltaX = x - dragStartPos.x;
+      let deltaY = y - dragStartPos.y;
+
+      if (settings.ortho) {
+        if (Math.abs(deltaX) > Math.abs(deltaY)) {
+          deltaY = 0;
+        } else {
+          deltaX = 0;
+        }
+      }
+
+      setDragDelta({ dx: deltaX, dy: deltaY });
+
+      setEntities(prev => prev.map(ent => {
+        const initial = dragInitialEntities.get(ent.id);
+        if (!initial) {
+          // Si le mur hôte d'une porte/fenêtre est déplacé, déplacer l'ouverture avec lui !
+          if ((ent.type === 'door' || ent.type === 'window') && ent.hostWallId && dragInitialEntities.has(ent.hostWallId)) {
+            return {
+              ...ent,
+              x1: ent.x1 + deltaX,
+              y1: ent.y1 + deltaY,
+              x2: ent.x2 + deltaX,
+              y2: ent.y2 + deltaY,
+            };
+          }
+          return ent;
+        }
+
+        // Murs, Cloisons, Cotes, Lignes
+        if (ent.type === 'wall' || ent.type === 'partition' || ent.type === 'dim' || ent.type === 'line') {
+          return {
+            ...ent,
+            x1: initial.x1 + deltaX,
+            y1: initial.y1 + deltaY,
+            x2: initial.x2 + deltaX,
+            y2: initial.y2 + deltaY,
+          };
+        }
+        // Pièces et Rectangles
+        if (ent.type === 'room' || ent.type === 'rect') {
+          return {
+            ...ent,
+            x1: initial.x1 + deltaX,
+            y1: initial.y1 + deltaY,
+            x2: initial.x2 + deltaX,
+            y2: initial.y2 + deltaY,
+          };
+        }
+        // Cercles
+        if (ent.type === 'circle') {
+          return {
+            ...ent,
+            x1: initial.x1 + deltaX,
+            y1: initial.y1 + deltaY,
+            x2: (initial.x2 ?? initial.x1) + deltaX,
+            y2: (initial.y2 ?? initial.y1) + deltaY,
+          };
+        }
+        // Courbes
+        if (ent.type === 'curve') {
+          return {
+            ...ent,
+            x1: initial.x1 + deltaX,
+            y1: initial.y1 + deltaY,
+            x2: initial.x2 + deltaX,
+            y2: initial.y2 + deltaY,
+            curvePoint: initial.curvePoint ? { x: initial.curvePoint.x + deltaX, y: initial.curvePoint.y + deltaY } : undefined,
+          };
+        }
+        // Blocs et mobilier
+        if (ent.type === 'furniture') {
+          return {
+            ...ent,
+            x1: initial.x1 + deltaX,
+            y1: initial.y1 + deltaY,
+            x2: initial.x2 + deltaX,
+            y2: initial.y2 + deltaY,
+          };
+        }
+        // Polygones
+        if (ent.points && initial.points) {
+          return {
+            ...ent,
+            points: initial.points.map(p => ({ x: p.x + deltaX, y: p.y + deltaY })),
+          };
+        }
+        return {
+          ...ent,
+          x1: initial.x1 + deltaX,
+          y1: initial.y1 + deltaY,
+          x2: initial.x2 + deltaX,
+          y2: initial.y2 + deltaY,
+        };
+      }));
+      return;
+    }
+
+    // Box selection update
     if (isBoxSelecting && boxStart) {
       setBoxCurrent({ x, y });
     }
 
-    // Détection en direct sous le centre du curseur pour l'outil de sélection
-    if (activeTool === 'select' && !isBoxSelecting) {
+    // Détection de survol pour l'outil de sélection
+    if (activeTool === 'select' && !isBoxSelecting && !isDraggingEntities && !activeGrip) {
       const hit = getEntityAtPoint(x, y, 9);
       setHoveredEntityId(hit ? hit.id : null);
     } else if (hoveredEntityId) {
       setHoveredEntityId(null);
     }
 
-    // Glissement fluide d'une ouverture (porte / fenêtre) le long d'un mur
+    // 4. Glissement fluide d'une ouverture (porte / fenêtre) le long d'un mur hôte
     if (draggingOpeningId) {
       const op = entities.find(ent => ent.id === draggingOpeningId);
       if (op) {
-        const snap = findWallSnap(rawX, rawY, op.openingWidth || 830, 250);
-        if (snap) {
+        const snapW = findWallSnap(rawX, rawY, op.openingWidth || 830, 250);
+        if (snapW) {
           setEntities(prev => prev.map(ent => {
             if (ent.id !== draggingOpeningId) return ent;
             return {
               ...ent,
-              x1: snap.p1X,
-              y1: snap.p1Y,
-              x2: snap.p2X,
-              y2: snap.p2Y,
-              angle: snap.wallAngleDeg,
-              thickness: snap.wallThickness,
-              hostWallId: snap.wall.id,
-              wallPositionRatio: snap.tClamped,
+              x1: snapW.p1X,
+              y1: snapW.p1Y,
+              x2: snapW.p2X,
+              y2: snapW.p2Y,
+              angle: snapW.wallAngleDeg,
+              thickness: snapW.wallThickness,
+              hostWallId: snapW.wall.id,
+              wallPositionRatio: snapW.tClamped,
             };
           }));
         }
@@ -1084,15 +1523,23 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
   // Handle Canvas Mouse Down
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.button === 1 || e.altKey) {
+    // Clic Molette (button 1) ou Alt+Clic ou Espace maintenu ou Outil Pan : Panoramique immédiat
+    if (e.button === 1 || e.altKey || isSpaceHeld || activeTool === 'pan') {
       setIsPanning(true);
       setPanStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
       return;
     }
 
-    if (e.button !== 0) return; // Left click only
+    if (e.button !== 0) return; // Bouton gauche uniquement
 
-    // Si outil sélection : le point de sélection est précisément ajusté au centre du curseur
+    // Tracé libre (Polygone / Libre) : début de capture au maintien du clic
+    if (activeTool === 'polyline' && polylineSubTool === 'freehand') {
+      setIsDrawingFreehand(true);
+      setFreehandPoints([{ x: cursorPos.x, y: cursorPos.y }]);
+      return;
+    }
+
+    // Si outil sélection : sélection ou déplacement d'éléments
     if (activeTool === 'select') {
       const targetEntityId = (e.target as HTMLElement).closest('[data-entity-id]')?.getAttribute('data-entity-id');
       const clickedEntity = (targetEntityId ? entities.find(ent => ent.id === targetEntityId) : null) || getEntityAtPoint(cursorPos.x, cursorPos.y, 9);
@@ -1100,28 +1547,44 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       if (clickedEntity) {
         const l = getLayer(clickedEntity.layerId);
         if (!l.locked) {
+          let currentSelected = selectedIds;
           if (e.shiftKey) {
-            setSelectedIds(prev =>
-              prev.includes(clickedEntity.id)
-                ? prev.filter(id => id !== clickedEntity.id)
-                : [...prev, clickedEntity.id]
-            );
+            currentSelected = selectedIds.includes(clickedEntity.id)
+              ? selectedIds.filter(id => id !== clickedEntity.id)
+              : [...selectedIds, clickedEntity.id];
+            setSelectedIds(currentSelected);
           } else {
-            setSelectedIds([clickedEntity.id]);
+            if (!selectedIds.includes(clickedEntity.id)) {
+              currentSelected = [clickedEntity.id];
+              setSelectedIds(currentSelected);
+            }
           }
+
           if (autoOpenPropsOnSelect) {
             setRightDockTab('props');
           }
-          // Glissement actif pour porte ou fenêtre encastrée
+
+          // Déplacement de porte/fenêtre encastrée sur mur
           if (clickedEntity.type === 'door' || clickedEntity.type === 'window') {
             setDraggingOpeningId(clickedEntity.id);
+          } else {
+            // Début du déplacement interactif des entités sélectionnées
+            setIsDraggingEntities(true);
+            setDragStartPos({ x: cursorPos.x, y: cursorPos.y });
+            const initMap = new Map<string, CadEntity>();
+            entities.forEach(ent => {
+              if (currentSelected.includes(ent.id)) {
+                initMap.set(ent.id, { ...ent });
+              }
+            });
+            setDragInitialEntities(initMap);
           }
         }
         setIsBoxSelecting(false);
         setBoxStart(null);
         setBoxCurrent(null);
       } else {
-        // Clic dans le vide : début de rectangle de sélection centré sur le curseur
+        // Clic dans le vide : rectangle de sélection
         if (!e.shiftKey) {
           setSelectedIds([]);
         }
@@ -1132,11 +1595,86 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     }
   };
 
-  // Handle Canvas Mouse Up (Ends box selection & opening dragging)
+  // Handle Canvas Mouse Up (Ends box selection, element drag & grip modification)
   const handleCanvasMouseUp = () => {
     if (isPanning) {
       setIsPanning(false);
       return;
+    }
+
+    // Fin du tracé libre (Freehand)
+    if (isDrawingFreehand) {
+      if (freehandPoints.length >= 3) {
+        const isClosed = Math.hypot(freehandPoints[0].x - freehandPoints[freehandPoints.length - 1].x, freehandPoints[0].y - freehandPoints[freehandPoints.length - 1].y) < 24;
+        const pts = [...freehandPoints];
+        const minX = Math.min(...pts.map(p => p.x));
+        const maxX = Math.max(...pts.map(p => p.x));
+        const minY = Math.min(...pts.map(p => p.y));
+        const maxY = Math.max(...pts.map(p => p.y));
+        let polyArea = 0;
+        if (isClosed) {
+          let s = 0;
+          for (let i = 0; i < pts.length; i++) {
+            const j = (i + 1) % pts.length;
+            s += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+          }
+          polyArea = Math.round(Math.abs(s / 2) / 10000) / 100;
+        }
+
+        const newEntity: CadEntity = {
+          id: `freehand-${Date.now()}`,
+          name: isClosed ? `Forme Libre Fermée (${pts.length} pts)` : `Tracé Libre (${pts.length} pts)`,
+          type: isClosed ? 'polygon' : 'polyline',
+          layerId: 'structures',
+          x1: minX,
+          y1: minY,
+          x2: maxX,
+          y2: maxY,
+          points: pts,
+          isClosed,
+          area: polyArea > 0 ? polyArea : undefined,
+          label: isClosed ? `FORME LIBRE (${pts.length} PTS)` : `TRACÉ LIBRE`,
+          subText: polyArea > 0 ? `${polyArea} m²` : undefined,
+        };
+        recordHistory();
+        setEntities(prev => [...prev, newEntity]);
+        setSelectedIds([newEntity.id]);
+        setCliHistory(prev => [
+          ...prev.slice(-3),
+          `_FREEHAND Tracé libre créé : ${pts.length} points ${isClosed ? `(Polygone fermé - ${polyArea} m²)` : '(Polyligne ouverte)'}`,
+          'Commande: ',
+        ]);
+      }
+      setIsDrawingFreehand(false);
+      setFreehandPoints([]);
+      return;
+    }
+
+    // Fin de modification d'une poignée
+    if (activeGrip) {
+      recordHistory();
+      setCliHistory(prev => [
+        ...prev.slice(-3),
+        `_STRETCH : Poignée [${activeGrip.gripType}] modifiée avec succès.`,
+        'Commande: ',
+      ]);
+      setActiveGrip(null);
+    }
+
+    // Fin de déplacement d'entités
+    if (isDraggingEntities) {
+      if (Math.hypot(dragDelta.dx, dragDelta.dy) > 1) {
+        recordHistory();
+        setCliHistory(prev => [
+          ...prev.slice(-3),
+          `_MOVE : ${dragInitialEntities.size} entité(s) déplacée(s) (ΔX: ${Math.round(dragDelta.dx * 10)} mm, ΔY: ${Math.round(dragDelta.dy * 10)} mm)`,
+          'Commande: ',
+        ]);
+      }
+      setIsDraggingEntities(false);
+      setDragStartPos(null);
+      setDragInitialEntities(new Map());
+      setDragDelta({ dx: 0, dy: 0 });
     }
 
     if (draggingOpeningId) {
@@ -1270,7 +1808,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       return; // Déjà géré précisément au centre du curseur dans handleCanvasMouseDown
     }
 
-    // 1. WALL CREATION (W)
+    // 1. WALL CREATION (W) - Mur Droit, Mur Continu, 4 Murs Rectangle
     if (activeTool === 'wall') {
       const l = getLayer('structures');
       if (l.locked) {
@@ -1278,49 +1816,123 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         return;
       }
 
-      if (!draftStart) {
-        // Set Point 1
-        setDraftStart({ x: cursorPos.x, y: cursorPos.y });
-        setCliHistory(prev => [
-          ...prev.slice(-3),
-          `_WALL P1: <${cursorPos.x * 10}, ${cursorPos.y * 10}>`,
-          'Spécifiez le point suivant ou Entrée pour valider :',
-        ]);
-      } else {
-        // Set Point 2 -> Create Wall Entity
-        const newWall: CadEntity = {
-          id: `wall-${Date.now()}`,
-          name: `Mur Extérieur L=${Math.round(Math.hypot(cursorPos.x - draftStart.x, cursorPos.y - draftStart.y) * 10)}mm`,
-          type: 'wall',
-          layerId: 'structures',
-          x1: draftStart.x,
-          y1: draftStart.y,
-          x2: cursorPos.x,
-          y2: cursorPos.y,
-          thickness: wallThickness,
-          height: wallHeight,
-          material: 'Béton banché + ITE 140mm',
-          materialIndex: 'MAT-01',
-        };
-        recordHistory();
-        setEntities(prev => [...prev, newWall]);
-        setSelectedIds([newWall.id]);
-
-        if (chaining) {
+      if (wallSubTool === 'rect') {
+        // Sous-outil : 4 MURS RECTANGLE (Boîte 4 murs d'un coup)
+        if (!draftStart) {
           setDraftStart({ x: cursorPos.x, y: cursorPos.y });
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_WALL_RECT Coin 1 : <${cursorPos.x * 10}, ${cursorPos.y * 10}>`,
+            'Déplacez le curseur et cliquez pour fixer le 2ème coin (génère 4 murs connectés) :',
+          ]);
         } else {
-          setDraftStart(null);
-        }
+          const minX = Math.min(draftStart.x, cursorPos.x);
+          const maxX = Math.max(draftStart.x, cursorPos.x);
+          const minY = Math.min(draftStart.y, cursorPos.y);
+          const maxY = Math.max(draftStart.y, cursorPos.y);
+          const wMm = Math.round((maxX - minX) * 10);
+          const hMm = Math.round((maxY - minY) * 10);
+          if (wMm < 40 && hMm < 40) return;
 
-        setCliHistory(prev => [
-          ...prev.slice(-3),
-          `_WALL créé : Longueur ${Math.round(Math.hypot(cursorPos.x - draftStart.x, cursorPos.y - draftStart.y) * 10)} mm`,
-          'Spécifiez le point suivant ou Échap pour terminer :',
-        ]);
+          const now = Date.now();
+          const wallTop: CadEntity = {
+            id: `wall-top-${now}`,
+            name: `Mur Extérieur Nord L=${wMm}mm`,
+            type: 'wall',
+            layerId: 'structures',
+            x1: minX, y1: minY, x2: maxX, y2: minY,
+            thickness: wallThickness, height: wallHeight,
+            material: 'Béton banché + ITE 140mm', materialIndex: 'MAT-01',
+          };
+          const wallRight: CadEntity = {
+            id: `wall-right-${now}`,
+            name: `Mur Extérieur Est L=${hMm}mm`,
+            type: 'wall',
+            layerId: 'structures',
+            x1: maxX, y1: minY, x2: maxX, y2: maxY,
+            thickness: wallThickness, height: wallHeight,
+            material: 'Béton banché + ITE 140mm', materialIndex: 'MAT-01',
+          };
+          const wallBottom: CadEntity = {
+            id: `wall-bottom-${now}`,
+            name: `Mur Extérieur Sud L=${wMm}mm`,
+            type: 'wall',
+            layerId: 'structures',
+            x1: maxX, y1: maxY, x2: minX, y2: maxY,
+            thickness: wallThickness, height: wallHeight,
+            material: 'Béton banché + ITE 140mm', materialIndex: 'MAT-01',
+          };
+          const wallLeft: CadEntity = {
+            id: `wall-left-${now}`,
+            name: `Mur Extérieur Ouest L=${hMm}mm`,
+            type: 'wall',
+            layerId: 'structures',
+            x1: minX, y1: maxY, x2: minX, y2: minY,
+            thickness: wallThickness, height: wallHeight,
+            material: 'Béton banché + ITE 140mm', materialIndex: 'MAT-01',
+          };
+
+          recordHistory();
+          setEntities(prev => [...prev, wallTop, wallRight, wallBottom, wallLeft]);
+          setSelectedIds([wallTop.id, wallRight.id, wallBottom.id, wallLeft.id]);
+          setDraftStart(null);
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_WALL_RECT 4 Murs Porteurs créés : ${wMm} × ${hMm} mm (${((wMm * hMm) / 1000000).toFixed(2)} m²)`,
+            'Commande: ',
+          ]);
+        }
+      } else {
+        // Sous-outils : Mur Droit (single) ou Mur Continu (continuous)
+        if (!draftStart) {
+          setDraftStart({ x: cursorPos.x, y: cursorPos.y });
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_WALL P1: <${cursorPos.x * 10}, ${cursorPos.y * 10}> [Mode: ${wallSubTool === 'continuous' ? 'Mur Continu' : 'Mur Droit'}]`,
+            'Spécifiez le point suivant ou Entrée pour valider :',
+          ]);
+        } else {
+          const lengthMm = Math.round(Math.hypot(cursorPos.x - draftStart.x, cursorPos.y - draftStart.y) * 10);
+          if (lengthMm < 30) return;
+
+          const newWall: CadEntity = {
+            id: `wall-${Date.now()}`,
+            name: `Mur Extérieur L=${lengthMm}mm`,
+            type: 'wall',
+            layerId: 'structures',
+            x1: draftStart.x,
+            y1: draftStart.y,
+            x2: cursorPos.x,
+            y2: cursorPos.y,
+            thickness: wallThickness,
+            height: wallHeight,
+            material: 'Béton banché + ITE 140mm',
+            materialIndex: 'MAT-01',
+          };
+          recordHistory();
+          setEntities(prev => [...prev, newWall]);
+          setSelectedIds([newWall.id]);
+
+          if (wallSubTool === 'continuous' || chaining) {
+            setDraftStart({ x: cursorPos.x, y: cursorPos.y });
+            setCliHistory(prev => [
+              ...prev.slice(-3),
+              `_WALL Segment créé : ${lengthMm} mm (Mur Continu actif)`,
+              'Point suivant ou Échap/Entrée pour terminer :',
+            ]);
+          } else {
+            setDraftStart(null);
+            setCliHistory(prev => [
+              ...prev.slice(-3),
+              `_WALL Mur Droit créé : Longueur ${lengthMm} mm`,
+              'Commande: ',
+            ]);
+          }
+        }
       }
     }
 
-    // 2. PARTITION CREATION (C)
+    // 2. PARTITION CREATION (C) - Cloison Droite, Continue ou 4 Cloisons Rectangle
     else if (activeTool === 'partition') {
       const l = getLayer('cloisons');
       if (l.locked) {
@@ -1328,40 +1940,104 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         return;
       }
 
-      if (!draftStart) {
-        setDraftStart({ x: cursorPos.x, y: cursorPos.y });
-        setCliHistory(prev => [
-          ...prev.slice(-3),
-          `_PARTITION P1 : <${cursorPos.x * 10}, ${cursorPos.y * 10}> [Snap Grille ${settings.gridSnapSize}px]`,
-          'Spécifiez le 2ème point sur la grille de points ou Échap pour annuler :',
-        ]);
-      } else {
-        const lengthMm = Math.round(Math.hypot(cursorPos.x - draftStart.x, cursorPos.y - draftStart.y) * 10);
-        if (lengthMm < 40) return;
+      if (partitionSubTool === 'rect') {
+        // 4 CLOISONS RECTANGLE
+        if (!draftStart) {
+          setDraftStart({ x: cursorPos.x, y: cursorPos.y });
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_PARTITION_RECT Coin 1 : <${cursorPos.x * 10}, ${cursorPos.y * 10}>`,
+            'Déplacez et cliquez pour fixer le 2ème coin (génère 4 cloisons connectées) :',
+          ]);
+        } else {
+          const minX = Math.min(draftStart.x, cursorPos.x);
+          const maxX = Math.max(draftStart.x, cursorPos.x);
+          const minY = Math.min(draftStart.y, cursorPos.y);
+          const maxY = Math.max(draftStart.y, cursorPos.y);
+          const wMm = Math.round((maxX - minX) * 10);
+          const hMm = Math.round((maxY - minY) * 10);
+          if (wMm < 40 && hMm < 40) return;
 
-        const newPart: CadEntity = {
-          id: `partition-${Date.now()}`,
-          name: `Cloison ${partitionType} L=${lengthMm}mm`,
-          type: 'partition',
-          layerId: 'cloisons',
-          x1: draftStart.x,
-          y1: draftStart.y,
-          x2: cursorPos.x,
-          y2: cursorPos.y,
-          thickness: partitionThickness,
-          height: wallHeight,
-          material: partitionType,
-          materialIndex: partitionType.includes('98') ? 'MAT-03' : partitionType.includes('Vitrée') ? 'MAT-08' : 'MAT-02',
-        };
-        recordHistory();
-        setEntities(prev => [...prev, newPart]);
-        setSelectedIds([newPart.id]);
-        setDraftStart(chaining ? { x: cursorPos.x, y: cursorPos.y } : null);
-        setCliHistory(prev => [
-          ...prev.slice(-3),
-          `_PARTITION créée : ${lengthMm} mm (${Math.round(lengthMm / (settings.gridSnapSize * 10))} modules de ${settings.gridSnapSize}px sur grille)`,
-          chaining ? 'Point suivant sur la grille ou Échap :' : 'Commande : ',
-        ]);
+          const now = Date.now();
+          const pTop: CadEntity = {
+            id: `part-top-${now}`, name: `Cloison Nord L=${wMm}mm`,
+            type: 'partition', layerId: 'cloisons',
+            x1: minX, y1: minY, x2: maxX, y2: minY,
+            thickness: partitionThickness, height: wallHeight,
+            material: partitionType, materialIndex: 'MAT-02',
+          };
+          const pRight: CadEntity = {
+            id: `part-right-${now}`, name: `Cloison Est L=${hMm}mm`,
+            type: 'partition', layerId: 'cloisons',
+            x1: maxX, y1: minY, x2: maxX, y2: maxY,
+            thickness: partitionThickness, height: wallHeight,
+            material: partitionType, materialIndex: 'MAT-02',
+          };
+          const pBottom: CadEntity = {
+            id: `part-bottom-${now}`, name: `Cloison Sud L=${wMm}mm`,
+            type: 'partition', layerId: 'cloisons',
+            x1: maxX, y1: maxY, x2: minX, y2: maxY,
+            thickness: partitionThickness, height: wallHeight,
+            material: partitionType, materialIndex: 'MAT-02',
+          };
+          const pLeft: CadEntity = {
+            id: `part-left-${now}`, name: `Cloison Ouest L=${hMm}mm`,
+            type: 'partition', layerId: 'cloisons',
+            x1: minX, y1: maxY, x2: minX, y2: minY,
+            thickness: partitionThickness, height: wallHeight,
+            material: partitionType, materialIndex: 'MAT-02',
+          };
+
+          recordHistory();
+          setEntities(prev => [...prev, pTop, pRight, pBottom, pLeft]);
+          setSelectedIds([pTop.id, pRight.id, pBottom.id, pLeft.id]);
+          setDraftStart(null);
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_PARTITION_RECT 4 Cloisons créées : ${wMm} × ${hMm} mm (${((wMm * hMm) / 1000000).toFixed(2)} m²)`,
+            'Commande: ',
+          ]);
+        }
+      } else {
+        if (!draftStart) {
+          setDraftStart({ x: cursorPos.x, y: cursorPos.y });
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_PARTITION P1 : <${cursorPos.x * 10}, ${cursorPos.y * 10}> [Mode: ${partitionSubTool === 'continuous' ? 'Cloison Continue' : 'Cloison Droite'}]`,
+            'Spécifiez le 2ème point sur la grille de points ou Échap pour annuler :',
+          ]);
+        } else {
+          const lengthMm = Math.round(Math.hypot(cursorPos.x - draftStart.x, cursorPos.y - draftStart.y) * 10);
+          if (lengthMm < 30) return;
+
+          const newPart: CadEntity = {
+            id: `partition-${Date.now()}`,
+            name: `Cloison ${partitionType} L=${lengthMm}mm`,
+            type: 'partition',
+            layerId: 'cloisons',
+            x1: draftStart.x,
+            y1: draftStart.y,
+            x2: cursorPos.x,
+            y2: cursorPos.y,
+            thickness: partitionThickness,
+            height: wallHeight,
+            material: partitionType,
+            materialIndex: partitionType.includes('98') ? 'MAT-03' : partitionType.includes('Vitrée') ? 'MAT-08' : 'MAT-02',
+          };
+          recordHistory();
+          setEntities(prev => [...prev, newPart]);
+          setSelectedIds([newPart.id]);
+          if (partitionSubTool === 'continuous' || chaining) {
+            setDraftStart({ x: cursorPos.x, y: cursorPos.y });
+          } else {
+            setDraftStart(null);
+          }
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_PARTITION créée : ${lengthMm} mm`,
+            partitionSubTool === 'continuous' ? 'Point suivant de cloison ou Échap :' : 'Commande : ',
+          ]);
+        }
       }
     }
 
@@ -1533,85 +2209,188 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       }
     }
 
-    // 6. RECTANGLE (R) - Création de formes rectangulaires
+    // 6. FORME (R) - Rectangle ou Cercle
     else if (activeTool === 'rect') {
-      if (!draftStart) {
-        setDraftStart({ x: cursorPos.x, y: cursorPos.y });
-        setCliHistory(prev => [
-          ...prev.slice(-3),
-          `_RECT Coin 1 : <${cursorPos.x * 10}, ${cursorPos.y * 10}> mm`,
-          'Déplacez le curseur et cliquez pour fixer le 2ème coin du rectangle :'
-        ]);
-      } else {
-        const widthMm = Math.round(Math.abs(cursorPos.x - draftStart.x) * 10);
-        const heightMm = Math.round(Math.abs(cursorPos.y - draftStart.y) * 10);
-        const areaM2 = Math.round(((widthMm * heightMm) / 1000000) * 100) / 100;
-        if (widthMm < 20 && heightMm < 20) return;
+      if (shapeSubTool === 'circle') {
+        // Sous-outil : CERCLE
+        if (!draftStart) {
+          setDraftStart({ x: cursorPos.x, y: cursorPos.y });
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_CIRCLE Centre : <${cursorPos.x * 10}, ${cursorPos.y * 10}> mm`,
+            'Déplacez le curseur et cliquez pour fixer le rayon du cercle :'
+          ]);
+        } else {
+          const rPx = Math.max(5, Math.hypot(cursorPos.x - draftStart.x, cursorPos.y - draftStart.y));
+          const rMm = Math.round(rPx * 10);
+          const dMm = rMm * 2;
+          const areaM2 = Math.round(Math.PI * Math.pow(rMm / 1000, 2) * 100) / 100;
+          if (rMm < 20) return;
 
-        const minX = Math.min(draftStart.x, cursorPos.x);
-        const minY = Math.min(draftStart.y, cursorPos.y);
-        const maxX = Math.max(draftStart.x, cursorPos.x);
-        const maxY = Math.max(draftStart.y, cursorPos.y);
-
-        const newRect: CadEntity = {
-          id: `rect-${Date.now()}`,
-          name: `Forme Rectangulaire ${widthMm}×${heightMm} mm`,
-          type: 'rect',
-          layerId: 'structures',
-          x1: minX,
-          y1: minY,
-          x2: maxX,
-          y2: maxY,
-          area: areaM2,
-          label: `${widthMm} × ${heightMm} mm`,
-          subText: `${areaM2.toFixed(2)} m²`,
-          hatchPattern: activeHatchPattern,
-          thickness: wallThickness,
-          height: wallHeight,
-        };
-        recordHistory();
-        setEntities(prev => [...prev, newRect]);
-        setSelectedIds([newRect.id]);
-        if (autoOpenPropsOnSelect) {
-          setRightDockTab('props');
+          const newCircle: CadEntity = {
+            id: `circle-${Date.now()}`,
+            name: `Forme Circulaire ⌀${dMm}mm (R=${rMm}mm)`,
+            type: 'circle',
+            layerId: 'structures',
+            x1: draftStart.x,
+            y1: draftStart.y,
+            x2: cursorPos.x,
+            y2: cursorPos.y,
+            radius: rPx,
+            area: areaM2,
+            label: `⌀ ${dMm} mm`,
+            subText: `R: ${rMm} mm · ${areaM2.toFixed(2)} m²`,
+            hatchPattern: activeHatchPattern,
+            thickness: wallThickness,
+            height: wallHeight,
+          };
+          recordHistory();
+          setEntities(prev => [...prev, newCircle]);
+          setSelectedIds([newCircle.id]);
+          if (autoOpenPropsOnSelect) {
+            setRightDockTab('props');
+          }
+          setDraftStart(null);
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_CIRCLE Cercle créé : ⌀ ${dMm} mm (Rayon ${rMm} mm, Surface ${areaM2.toFixed(2)} m²)`,
+            'Commande: '
+          ]);
         }
-        setDraftStart(null);
-        setCliHistory(prev => [
-          ...prev.slice(-3),
-          `_RECT Forme rectangulaire créée : ${widthMm} × ${heightMm} mm (${areaM2.toFixed(2)} m²)`,
-          'Commande: '
-        ]);
+      } else {
+        // Sous-outil : RECTANGLE
+        if (!draftStart) {
+          setDraftStart({ x: cursorPos.x, y: cursorPos.y });
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_RECT Coin 1 : <${cursorPos.x * 10}, ${cursorPos.y * 10}> mm`,
+            'Déplacez le curseur et cliquez pour fixer le 2ème coin du rectangle :'
+          ]);
+        } else {
+          const widthMm = Math.round(Math.abs(cursorPos.x - draftStart.x) * 10);
+          const heightMm = Math.round(Math.abs(cursorPos.y - draftStart.y) * 10);
+          const areaM2 = Math.round(((widthMm * heightMm) / 1000000) * 100) / 100;
+          if (widthMm < 20 && heightMm < 20) return;
+
+          const minX = Math.min(draftStart.x, cursorPos.x);
+          const minY = Math.min(draftStart.y, cursorPos.y);
+          const maxX = Math.max(draftStart.x, cursorPos.x);
+          const maxY = Math.max(draftStart.y, cursorPos.y);
+
+          const newRect: CadEntity = {
+            id: `rect-${Date.now()}`,
+            name: `Forme Rectangulaire ${widthMm}×${heightMm} mm`,
+            type: 'rect',
+            layerId: 'structures',
+            x1: minX,
+            y1: minY,
+            x2: maxX,
+            y2: maxY,
+            area: areaM2,
+            label: `${widthMm} × ${heightMm} mm`,
+            subText: `${areaM2.toFixed(2)} m²`,
+            hatchPattern: activeHatchPattern,
+            thickness: wallThickness,
+            height: wallHeight,
+          };
+          recordHistory();
+          setEntities(prev => [...prev, newRect]);
+          setSelectedIds([newRect.id]);
+          if (autoOpenPropsOnSelect) {
+            setRightDockTab('props');
+          }
+          setDraftStart(null);
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_RECT Forme rectangulaire créée : ${widthMm} × ${heightMm} mm (${areaM2.toFixed(2)} m²)`,
+            'Commande: '
+          ]);
+        }
       }
     }
 
-    // 6B. POLYGONE & TRAITS MULTIPLES (L / _POLY) - Tracer des formes diverses avec des traits
+    // 6B. POLYGONE & TRACÉ (L / _POLY) - Trait, Libre, ou Courbe
     else if (activeTool === 'polyline') {
-      const curPt = { x: cursorPos.x, y: cursorPos.y };
-
-      if (polyPoints.length === 0) {
-        setPolyPoints([curPt]);
-        setCliHistory(prev => [
-          ...prev.slice(-3),
-          `_POLY Sommet 1 : <${curPt.x * 10}, ${curPt.y * 10}> mm`,
-          'Cliquez pour ajouter des traits successifs (Cliquez sur P1 ou appuyez sur Entrée pour fermer le polygone) :'
-        ]);
-      } else {
-        const firstPt = polyPoints[0];
-        const distToFirst = Math.hypot(curPt.x - firstPt.x, curPt.y - firstPt.y);
-
-        // Si clic proche du point initial (P1) et au moins 3 sommets -> fermer le polygone
-        if (polyPoints.length >= 3 && distToFirst < 18) {
-          finalizePolygon(polyPoints, true);
-        } else {
-          const nextPoints = [...polyPoints, curPt];
-          const lastPt = polyPoints[polyPoints.length - 1];
-          const segDistMm = Math.round(Math.hypot(curPt.x - lastPt.x, curPt.y - lastPt.y) * 10);
-          setPolyPoints(nextPoints);
+      if (polylineSubTool === 'curve') {
+        // Sous-outil : COURBE / ARC BÉZIER 3 POINTS
+        if (curveStep === 0 || !curveP1) {
+          setCurveP1({ x: cursorPos.x, y: cursorPos.y });
+          setCurveStep(1);
           setCliHistory(prev => [
             ...prev.slice(-3),
-            `_POLY Trait ${nextPoints.length - 1} posé : ${segDistMm} mm (${nextPoints.length} sommets)`,
-            'Tracez le trait suivant, ou appuyez sur Entrée pour valider :'
+            `_ARC P1 (Départ) : <${cursorPos.x * 10}, ${cursorPos.y * 10}> mm`,
+            'Cliquez pour fixer le Point 2 (Arrivée de la courbe) :',
           ]);
+        } else if (curveStep === 1) {
+          setCurveP2({ x: cursorPos.x, y: cursorPos.y });
+          setCurveStep(2);
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_ARC P2 (Arrivée) : <${cursorPos.x * 10}, ${cursorPos.y * 10}> mm`,
+            'Déplacez le curseur pour modeler la courbure / flèche de l\'arc et cliquez pour valider :',
+          ]);
+        } else if (curveStep === 2 && curveP1 && curveP2) {
+          const chordMm = Math.round(Math.hypot(curveP2.x - curveP1.x, curveP2.y - curveP1.y) * 10);
+          const newCurve: CadEntity = {
+            id: `curve-${Date.now()}`,
+            name: `Courbe / Arc Bézier (Corde=${chordMm}mm)`,
+            type: 'curve',
+            layerId: 'structures',
+            x1: curveP1.x,
+            y1: curveP1.y,
+            x2: curveP2.x,
+            y2: curveP2.y,
+            curvePoint: { x: cursorPos.x, y: cursorPos.y },
+            label: `ARC CORDE ${chordMm}mm`,
+          };
+          recordHistory();
+          setEntities(prev => [...prev, newCurve]);
+          setSelectedIds([newCurve.id]);
+          setCurveP1(null);
+          setCurveP2(null);
+          setCurveStep(0);
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_ARC Courbe Bézier créée : Corde ${chordMm} mm`,
+            'Commande: ',
+          ]);
+        }
+      } else if (polylineSubTool === 'freehand') {
+        // Tracé libre à main levée
+        setCliHistory(prev => [
+          ...prev.slice(-3),
+          `_FREEHAND : Maintenez le clic gauche et glissez pour dessiner votre tracé organique à main levée.`,
+          'Commande: ',
+        ]);
+      } else {
+        // Sous-outil : TRAIT / SEGMENTS MULTIPLES (straight)
+        const curPt = { x: cursorPos.x, y: cursorPos.y };
+
+        if (polyPoints.length === 0) {
+          setPolyPoints([curPt]);
+          setCliHistory(prev => [
+            ...prev.slice(-3),
+            `_POLY Sommet 1 : <${curPt.x * 10}, ${curPt.y * 10}> mm`,
+            'Cliquez pour ajouter des traits successifs (Cliquez sur P1 ou appuyez sur Entrée pour fermer le polygone) :'
+          ]);
+        } else {
+          const firstPt = polyPoints[0];
+          const distToFirst = Math.hypot(curPt.x - firstPt.x, curPt.y - firstPt.y);
+
+          // Si clic proche du point initial (P1) et au moins 3 sommets -> fermer le polygone
+          if (polyPoints.length >= 3 && distToFirst < 18) {
+            finalizePolygon(polyPoints, true);
+          } else {
+            const nextPoints = [...polyPoints, curPt];
+            const lastPt = polyPoints[polyPoints.length - 1];
+            const segDistMm = Math.round(Math.hypot(curPt.x - lastPt.x, curPt.y - lastPt.y) * 10);
+            setPolyPoints(nextPoints);
+            setCliHistory(prev => [
+              ...prev.slice(-3),
+              `_POLY Trait ${nextPoints.length - 1} posé : ${segDistMm} mm (${nextPoints.length} sommets)`,
+              'Tracez le trait suivant, ou appuyez sur Entrée pour valider :'
+            ]);
+          }
         }
       }
     }
@@ -1700,40 +2479,96 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     ]);
   };
 
-  // Keyboard Shortcuts listener (Delete, Escape, Ctrl+Z, Ctrl+D, Tool shortcuts)
+  // Keyboard Shortcuts listener (Delete, Escape, Ctrl+Z, Ctrl+D, Tool shortcuts, Space Pan, Zoom keys)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
         return;
       }
 
-      // Space key: Inverser le sens d'ouverture de porte (Tirant Gauche / Droit)
+      // Space key: Inverser le sens d'ouverture de porte OU Activer Panoramique (Main)
       if (e.code === 'Space') {
         if (activeTool === 'door') {
           e.preventDefault();
           setActiveDoorSwing(prev => prev === 'left' ? 'right' : 'left');
           return;
         }
-        if (primarySelectedEntity && primarySelectedEntity.type === 'door') {
+        const currentDoor = selectedIds.length === 1 ? entities.find(e => e.id === selectedIds[0] && e.type === 'door') : null;
+        if (currentDoor) {
           e.preventDefault();
           handleUpdateSelectedFields({
-            doorSwing: primarySelectedEntity.doorSwing === 'left' ? 'right' : 'left'
+            doorSwing: currentDoor.doorSwing === 'left' ? 'right' : 'left'
           });
           return;
         }
+        // Panoramique / Main avec Espace maintenu :
+        if (!e.repeat) {
+          e.preventDefault();
+          setIsSpaceHeld(true);
+        }
       }
 
-      // Enter key: valider le polygone ou forme active
+      // Zoom Hotkeys (+, -, 0, Ctrl+0)
+      if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        handleZoomIn();
+        return;
+      }
+      if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        handleZoomOut();
+        return;
+      }
+      if (e.key === '0' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        handleZoomReset();
+        return;
+      }
+
+      // Enter key: valider le polygone ou forme active, ou terminer mur continu
       if (e.key === 'Enter') {
         if (activeTool === 'polyline' && polyPoints.length >= 2) {
           e.preventDefault();
           finalizePolygon(polyPoints, polyPoints.length >= 3);
           return;
         }
+        if ((activeTool === 'wall' || activeTool === 'partition') && draftStart) {
+          e.preventDefault();
+          setDraftStart(null);
+          setCliHistory(prev => [...prev.slice(-3), 'Chaîne de murs / cloisons terminée.', 'Commande: ']);
+          return;
+        }
       }
 
-      // Escape key: annuler le tracé en cours ou désélectionner
+      // Escape key: annuler le tracé en cours, poignée ou sélection
       if (e.key === 'Escape') {
+        if (activeFlyout) {
+          setActiveFlyout(null);
+          return;
+        }
+        if (curveStep > 0) {
+          e.preventDefault();
+          setCurveStep(0);
+          setCurveP1(null);
+          setCurveP2(null);
+          setCliHistory(prev => [...prev.slice(-3), 'Tracé de courbe / arc annulé.', 'Commande: ']);
+          return;
+        }
+        if (activeGrip) {
+          e.preventDefault();
+          setEntities(prev => prev.map(ent => ent.id === activeGrip.entityId ? activeGrip.initialEntity : ent));
+          setActiveGrip(null);
+          return;
+        }
+        if (isDraggingEntities && dragInitialEntities.size > 0) {
+          e.preventDefault();
+          setEntities(prev => prev.map(ent => dragInitialEntities.get(ent.id) || ent));
+          setIsDraggingEntities(false);
+          setDragStartPos(null);
+          setDragInitialEntities(new Map());
+          setDragDelta({ dx: 0, dy: 0 });
+          return;
+        }
         if (polyPoints.length > 0) {
           e.preventDefault();
           setPolyPoints([]);
@@ -1858,16 +2693,25 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           setDraftStart(null);
           setMeasureStart(null);
           setMeasureResult(null);
-          setIsBoxSelecting(false);
-          setSelectedIds([]);
-          setActiveTool('select');
+          break;
+        default:
           break;
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setIsSpaceHeld(false);
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedIds, entities, historyStack, redoStack, draftStart, measureStart, measureResult, isBoxSelecting]);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [selectedIds, entities, historyStack, redoStack, draftStart, measureStart, measureResult, isBoxSelecting, activeTool, polyPoints, activeGrip, isDraggingEntities, dragInitialEntities]);
 
   // Handle CLI Submit
   const handleCliSubmit = (e: React.FormEvent) => {
@@ -1949,12 +2793,22 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     } else if (cmd === '_EXTEND 800' || cmd === 'EXTEND') {
       setIsAiDiffApplied(true);
       newHist.push('Façade Sud étendue de +800mm. Surfaces recalculées.');
-    } else if (cmd === 'ZOOM' || cmd === 'Z') {
-      setCanvasZoom(1);
-      setPanOffset({ x: 0, y: 0 });
-      newHist.push('Vue recentrée à l\'échelle 1:50.');
+    } else if (cmd.startsWith('ZOOM') || cmd === 'Z') {
+      if (cmd.includes('E') || cmd.includes('EXTENTS') || cmd.includes('TOUT') || cmd.includes('FIT')) {
+        handleZoomFit();
+        newHist.push('ZOOM ÉTENDU (CADRER TOUT) : Vue cadrée sur l\'ensemble des entités du plan.');
+      } else if (cmd.includes('100') || cmd.includes('1:1') || cmd.includes('RESET')) {
+        handleZoomReset();
+        newHist.push('ZOOM 100% : Échelle 1:1 rétablie.');
+      } else {
+        handleZoomFit();
+        newHist.push('ZOOM : Vue optimisée (Z E: Cadrer tout, Z 100: Réinitialiser 1:1).');
+      }
+    } else if (cmd === 'PAN' || cmd === 'MAIN' || cmd === '_PAN') {
+      setActiveTool('pan');
+      newHist.push('Outil Panoramique / Main activé. Glissez sur le canvas pour déplacer la vue (ou maintenez Espace).');
     } else if (cmd === 'HELP') {
-      newHist.push('Commandes: _WALL, _DOOR, _DELETE, LAYERS (LA), _EXTEND 800, ZOOM, HELP');
+      newHist.push('Commandes: _WALL, _DOOR, _DELETE, LAYERS (LA), ZOOM (Z E / Z 100), PAN, HELP');
     } else {
       newHist.push(`Commande validée: ${cmd}.`);
     }
@@ -2120,6 +2974,33 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             </div>
           ) : activeTool === 'partition' ? (
             <>
+              {/* Partition Sub-tools Selector */}
+              <div className="flex items-center gap-1 bg-surface-container-low p-0.5 rounded border border-outline-variant/30 text-xs">
+                <span className="font-mono text-[9px] text-tertiary px-1 font-semibold uppercase">MODE:</span>
+                {[
+                  { id: 'single', label: 'Droite', icon: 'segment', title: 'Cloison Droite (Segment P1 → P2)' },
+                  { id: 'continuous', label: 'Continue', icon: 'timeline', title: 'Cloison Continue (Chaîne successive)' },
+                  { id: 'rect', label: '4 Cloisons Rect', icon: 'crop_square', title: '4 Cloisons en boîte rectangulaire' },
+                ].map(sub => (
+                  <button
+                    key={sub.id}
+                    onClick={() => {
+                      setPartitionSubTool(sub.id as WallSubTool);
+                      setDraftStart(null);
+                    }}
+                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-all border ${
+                      partitionSubTool === sub.id
+                        ? 'bg-tertiary text-on-tertiary font-bold border-tertiary shadow-xs'
+                        : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface border-outline-variant/20'
+                    }`}
+                    title={sub.title}
+                  >
+                    <span className="material-symbols-outlined text-[13px]">{sub.icon}</span>
+                    <span>{sub.label}</span>
+                  </button>
+                ))}
+              </div>
+
               {/* Partition Type Dropdown */}
               <div className="flex items-center gap-1 bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant/20 text-xs">
                 <span className="font-mono text-[10px] text-tertiary font-bold">CLOISON:</span>
@@ -2441,8 +3322,139 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                 <span>Découpe et orientation automatique dans l'épaisseur de la maçonnerie</span>
               </span>
             </>
+          ) : activeTool === 'rect' ? (
+            <>
+              {/* Forme Sub-tools Selector */}
+              <div className="flex items-center gap-1 bg-surface-container-low p-0.5 rounded border border-outline-variant/30 text-xs">
+                <span className="font-mono text-[9px] text-sky-400 px-1 font-semibold uppercase">SOUS-OUTIL FORME:</span>
+                {[
+                  { id: 'rect', label: 'Rectangle', icon: 'rectangle', desc: 'Emprise rectangulaire 2 coins (R)' },
+                  { id: 'circle', label: 'Cercle', icon: 'radio_button_unchecked', desc: 'Cercle paramétrique (Centre + Rayon)' },
+                ].map(sub => (
+                  <button
+                    key={sub.id}
+                    onClick={() => {
+                      setShapeSubTool(sub.id as ShapeSubTool);
+                      setDraftStart(null);
+                    }}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono transition-all border ${
+                      shapeSubTool === sub.id
+                        ? 'bg-sky-500 text-white font-bold border-sky-400 shadow-xs'
+                        : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface border-outline-variant/20'
+                    }`}
+                    title={sub.desc}
+                  >
+                    <span className="material-symbols-outlined text-[13px]">{sub.icon}</span>
+                    <span>{sub.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Status info */}
+              <div className="flex items-center gap-1.5 bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant/20 text-xs font-mono">
+                <span className="text-[10px] text-outline">
+                  {shapeSubTool === 'circle' ? 'CERCLE:' : 'RECTANGLE:'}
+                </span>
+                <span className="text-[11px] text-sky-300 font-bold">
+                  {draftStart
+                    ? shapeSubTool === 'circle'
+                      ? `Centre fixé → Déplacez pour rayon (${Math.round(Math.hypot(cursorPos.x - draftStart.x, cursorPos.y - draftStart.y) * 10)} mm)`
+                      : `Coin 1 fixé → Cliquez pour coin 2 (${Math.round(Math.abs(cursorPos.x - draftStart.x) * 10)} × ${Math.round(Math.abs(cursorPos.y - draftStart.y) * 10)} mm)`
+                    : shapeSubTool === 'circle'
+                    ? 'Cliquez pour positionner le centre du cercle'
+                    : 'Cliquez pour fixer le premier coin'}
+                </span>
+              </div>
+            </>
+          ) : activeTool === 'polyline' ? (
+            <>
+              {/* Polygone Sub-tools Selector */}
+              <div className="flex items-center gap-1 bg-surface-container-low p-0.5 rounded border border-outline-variant/30 text-xs">
+                <span className="font-mono text-[9px] text-primary px-1 font-semibold uppercase">SOUS-OUTIL TRACÉ:</span>
+                {[
+                  { id: 'straight', label: 'Trait / Segments', icon: 'polyline', desc: 'Tracé de traits successifs (L)' },
+                  { id: 'freehand', label: 'Libre (Main levée)', icon: 'gesture', desc: 'Tracé libre fluide au glisser' },
+                  { id: 'curve', label: 'Courbe / Arc', icon: 'gesture_select', desc: 'Courbe ou arc Bézier 3 points' },
+                ].map(sub => (
+                  <button
+                    key={sub.id}
+                    onClick={() => {
+                      setPolylineSubTool(sub.id as PolylineSubTool);
+                      setPolyPoints([]);
+                      setCurveStep(0);
+                      setCurveP1(null);
+                      setCurveP2(null);
+                    }}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono transition-all border ${
+                      polylineSubTool === sub.id
+                        ? 'bg-primary text-on-primary font-bold border-primary shadow-xs'
+                        : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface border-outline-variant/20'
+                    }`}
+                    title={sub.desc}
+                  >
+                    <span className="material-symbols-outlined text-[13px]">{sub.icon}</span>
+                    <span>{sub.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Status and Action Buttons */}
+              <div className="flex items-center gap-1.5 bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant/20 text-xs font-mono">
+                <span className="text-[10px] text-outline">STATUT:</span>
+                <span className="text-[11px] text-primary font-bold">
+                  {polylineSubTool === 'freehand'
+                    ? 'Maintenez le clic gauche et glissez pour dessiner à main levée'
+                    : polylineSubTool === 'curve'
+                    ? curveStep === 1
+                      ? 'P1 fixé → Cliquez pour fixer le point d\'arrivée (P2)'
+                      : curveStep === 2
+                      ? 'P1 et P2 fixés → Ajustez la courbure et cliquez pour valider'
+                      : 'Cliquez pour fixer le point de départ de l\'arc'
+                    : polyPoints.length > 0
+                    ? `${polyPoints.length} point(s) posé(s) → Clic P1 ou Entrée pour fermer`
+                    : 'Cliquez pour démarrer la chaîne de traits'}
+                </span>
+              </div>
+
+              {polylineSubTool === 'straight' && polyPoints.length >= 2 && (
+                <button
+                  onClick={() => finalizePolygon(polyPoints, polyPoints.length >= 3)}
+                  className="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary border border-primary/40 font-mono text-[10px] font-bold transition-colors flex items-center gap-1"
+                >
+                  <span className="material-symbols-outlined text-[13px]">check</span>
+                  <span>Valider (Entrée)</span>
+                </button>
+              )}
+            </>
           ) : (
             <>
+              {/* Wall Sub-tools Selector */}
+              <div className="flex items-center gap-1 bg-surface-container-low p-0.5 rounded border border-outline-variant/30 text-xs">
+                <span className="font-mono text-[9px] text-primary px-1 font-semibold uppercase">SOUS-OUTIL MUR:</span>
+                {[
+                  { id: 'single', label: 'Mur Droit', icon: 'segment', desc: 'Segment droit unique P1 → P2' },
+                  { id: 'continuous', label: 'Mur Continu', icon: 'timeline', desc: 'Murs consécutifs en continu (Entrée pour terminer)' },
+                  { id: 'rect', label: '4 Murs Rectangle', icon: 'crop_square', desc: 'Boîte fermée de 4 murs d\'un coup' },
+                ].map(sub => (
+                  <button
+                    key={sub.id}
+                    onClick={() => {
+                      setWallSubTool(sub.id as WallSubTool);
+                      setDraftStart(null);
+                    }}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono transition-all border ${
+                      wallSubTool === sub.id
+                        ? 'bg-primary text-on-primary font-bold border-primary shadow-xs'
+                        : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface border-outline-variant/20'
+                    }`}
+                    title={sub.desc}
+                  >
+                    <span className="material-symbols-outlined text-[13px]">{sub.icon}</span>
+                    <span>{sub.label}</span>
+                  </button>
+                ))}
+              </div>
+
               {/* Wall Type Dropdown */}
               <div className="flex items-center gap-1 bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant/20 text-xs">
                 <span className="font-mono text-[10px] text-on-surface-variant">TYPE:</span>
@@ -2654,51 +3666,209 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             >
               <span className="material-symbols-outlined text-[17px]">terminal</span>
             </button>
+            {onOpenTutorial && (
+              <button
+                onClick={onOpenTutorial}
+                className="p-1.5 text-sky-400 hover:text-sky-300 hover:bg-sky-950/40 rounded transition-colors"
+                title="Grand Cours & Tutoriel CAO de A à Z (11 modules)"
+              >
+                <span className="material-symbols-outlined text-[17px]">school</span>
+              </button>
+            )}
           </div>
         </aside>
 
         {/* Compact CAD Drafting Tools Strip */}
-        <aside className="w-11 bg-surface-container-lowest border-r border-outline-variant/20 flex flex-col items-center py-1 gap-1 z-30 shadow-md flex-none">
+        <aside className="w-11 bg-surface-container-lowest border-r border-outline-variant/20 flex flex-col items-center py-1 gap-1 z-30 shadow-md flex-none relative">
           {[
             { id: 'select', icon: 'near_me', key: 'V', title: 'Sélection & Manipulation (V)' },
-            { id: 'measure', icon: 'square_foot', key: 'M', title: 'Mesure de distance en temps réel (M / _DIST)' },
-            { id: 'dim', icon: 'straighten', key: 'D', title: 'Cotation Automatique (D / _DIM)' },
-            { id: 'hatch', icon: 'texture', key: 'H', title: 'Hachures Paramétriques (H / _HATCH)' },
-            { id: 'wall', icon: 'view_column', key: 'W', title: 'Mur Porteur Continu (W)' },
-            { id: 'partition', icon: 'splitscreen', key: 'C', title: 'Cloison légère 72mm (C)' },
+            { id: 'pan', icon: 'pan_tool', key: 'Space', title: 'Panoramique / Déplacer la vue (Maintenir Espace ou Clic Molette)' },
+            { id: 'wall', icon: wallSubTool === 'rect' ? 'crop_square' : wallSubTool === 'continuous' ? 'timeline' : 'view_column', key: 'W', title: `Mur (${wallSubTool === 'rect' ? '4 Murs Rectangle' : wallSubTool === 'continuous' ? 'Mur Continu' : 'Mur Droit'}) [W]`, hasSub: true },
+            { id: 'partition', icon: partitionSubTool === 'rect' ? 'crop_square' : partitionSubTool === 'continuous' ? 'timeline' : 'splitscreen', key: 'C', title: `Cloison (${partitionSubTool === 'rect' ? '4 Cloisons Rect' : partitionSubTool === 'continuous' ? 'Continue' : 'Droite'}) [C]`, hasSub: true },
+            { id: 'rect', icon: shapeSubTool === 'circle' ? 'radio_button_unchecked' : 'rectangle', key: 'R', title: `Forme (${shapeSubTool === 'circle' ? 'Cercle' : 'Rectangle'}) [R]`, hasSub: true },
+            { id: 'polyline', icon: polylineSubTool === 'freehand' ? 'gesture' : polylineSubTool === 'curve' ? 'gesture_select' : 'polyline', key: 'L', title: `Tracé (${polylineSubTool === 'freehand' ? 'Libre / Main levée' : polylineSubTool === 'curve' ? 'Courbe / Arc' : 'Trait'}) [L]`, hasSub: true },
             { id: 'door', icon: 'meeting_room', key: 'P', title: 'Porte avec sens (P)' },
             { id: 'window', icon: 'window', key: 'F', title: 'Fenêtre / Baie vitrée (F)' },
             { id: 'room', icon: 'crop_free', key: 'A', title: 'Détecteur de surfaces / Pièces (A)' },
-            { id: 'rect', icon: 'rectangle', key: 'R', title: 'Rectangle / Emprise (R)' },
-            { id: 'polyline', icon: 'polyline', key: 'L', title: 'Ligne / Polyligne libre (L)' },
+            { id: 'dim', icon: 'straighten', key: 'D', title: 'Cotation Automatique (D / _DIM)' },
+            { id: 'hatch', icon: 'texture', key: 'H', title: 'Hachures Paramétriques (H / _HATCH)' },
+            { id: 'measure', icon: 'square_foot', key: 'M', title: 'Mesure de distance en temps réel (M / _DIST)' },
           ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => {
-                setActiveTool(t.id as CadTool);
-                setDraftStart(null);
-                setMeasureStart(null);
-              }}
-              className={`relative w-8 h-8 rounded flex items-center justify-center transition-colors group ${
-                activeTool === t.id
-                  ? 'bg-surface-container-high text-primary shadow-sm'
-                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high'
-              }`}
-              title={t.title}
-            >
-              <span className="material-symbols-outlined text-[18px]" style={{ fontVariationSettings: activeTool === t.id ? "'FILL' 1" : "'FILL' 0" }}>
-                {t.icon}
-              </span>
-              {activeTool === t.id && (
-                <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
-              )}
-              {t.key && (
-                <span className={`absolute bottom-0 right-0.5 font-mono text-[8px] ${activeTool === t.id ? 'text-primary font-bold' : 'text-outline'}`}>
-                  {t.key}
+            <div key={t.id} className="relative group">
+              <button
+                onClick={() => {
+                  setActiveTool(t.id as CadTool);
+                  setDraftStart(null);
+                  setMeasureStart(null);
+                  if (activeFlyout && activeFlyout !== t.id) setActiveFlyout(null);
+                }}
+                onContextMenu={(e) => {
+                  if (t.hasSub) {
+                    e.preventDefault();
+                    setActiveFlyout(prev => prev === t.id ? null : (t.id as any));
+                  }
+                }}
+                className={`relative w-8 h-8 rounded flex items-center justify-center transition-colors ${
+                  activeTool === t.id
+                    ? 'bg-surface-container-high text-primary shadow-sm'
+                    : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high'
+                }`}
+                title={t.title}
+              >
+                <span className="material-symbols-outlined text-[18px]" style={{ fontVariationSettings: activeTool === t.id ? "'FILL' 1" : "'FILL' 0" }}>
+                  {t.icon}
                 </span>
-              )}
-            </button>
+                {activeTool === t.id && (
+                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
+                )}
+                {t.hasSub && (
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveTool(t.id as CadTool);
+                      setActiveFlyout(prev => prev === t.id ? null : (t.id as any));
+                    }}
+                    className="absolute bottom-0 right-0 text-[8px] text-outline-variant hover:text-primary leading-none cursor-pointer p-0.5"
+                    title="Menu des sous-outils"
+                  >
+                    ▾
+                  </span>
+                )}
+                {t.key && !t.hasSub && (
+                  <span className={`absolute bottom-0 right-0.5 font-mono text-[8px] ${activeTool === t.id ? 'text-primary font-bold' : 'text-outline'}`}>
+                    {t.key}
+                  </span>
+                )}
+              </button>
+            </div>
           ))}
+
+          {/* Subtools Flyout Menu */}
+          {activeFlyout && (
+            <div
+              className="absolute left-12 z-50 bg-[#020d18]/95 backdrop-blur-md border border-primary/40 rounded-lg p-2 shadow-2xl font-mono text-xs flex flex-col gap-1 w-64 select-none animate-in fade-in zoom-in-95 duration-100"
+              style={{
+                top: activeFlyout === 'wall' ? '65px' : activeFlyout === 'partition' ? '100px' : activeFlyout === 'rect' ? '135px' : '170px'
+              }}
+            >
+              <div className="flex items-center justify-between pb-1 mb-1 border-b border-outline-variant/30 text-[10px] text-outline uppercase font-bold">
+                <span>
+                  {activeFlyout === 'wall' ? 'Sous-outils Mur' : activeFlyout === 'partition' ? 'Sous-outils Cloison' : activeFlyout === 'rect' ? 'Sous-outils Forme' : 'Sous-outils Tracé'}
+                </span>
+                <button onClick={() => setActiveFlyout(null)} className="hover:text-primary text-[12px] px-1">✕</button>
+              </div>
+
+              {activeFlyout === 'wall' && [
+                { id: 'single', label: 'Mur Droit', icon: 'segment', desc: 'Segment unique droit (P1 → P2)' },
+                { id: 'continuous', label: 'Mur Continu', icon: 'timeline', desc: 'Murs consécutifs en chaîne (Entrée pour valider)' },
+                { id: 'rect', label: '4 Murs Rectangle', icon: 'crop_square', desc: 'Génère 4 murs connectés en boîte fermée' },
+              ].map(sub => (
+                <button
+                  key={sub.id}
+                  onClick={() => {
+                    setActiveTool('wall');
+                    setWallSubTool(sub.id as WallSubTool);
+                    setDraftStart(null);
+                    setActiveFlyout(null);
+                  }}
+                  className={`flex items-start gap-2 p-1.5 rounded transition-all text-left ${
+                    wallSubTool === sub.id && activeTool === 'wall'
+                      ? 'bg-primary/20 text-primary border border-primary/50 font-bold'
+                      : 'hover:bg-surface-container-high text-on-surface'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px] text-primary mt-0.5">{sub.icon}</span>
+                  <div>
+                    <div className="text-[11px] font-bold">{sub.label}</div>
+                    <div className="text-[9px] text-outline font-normal">{sub.desc}</div>
+                  </div>
+                </button>
+              ))}
+
+              {activeFlyout === 'partition' && [
+                { id: 'single', label: 'Cloison Droite', icon: 'segment', desc: 'Segment unique droit (P1 → P2)' },
+                { id: 'continuous', label: 'Cloison Continue', icon: 'timeline', desc: 'Cloisons consécutives en chaîne' },
+                { id: 'rect', label: '4 Cloisons Rectangle', icon: 'crop_square', desc: 'Boîte fermée de 4 cloisons' },
+              ].map(sub => (
+                <button
+                  key={sub.id}
+                  onClick={() => {
+                    setActiveTool('partition');
+                    setPartitionSubTool(sub.id as WallSubTool);
+                    setDraftStart(null);
+                    setActiveFlyout(null);
+                  }}
+                  className={`flex items-start gap-2 p-1.5 rounded transition-all text-left ${
+                    partitionSubTool === sub.id && activeTool === 'partition'
+                      ? 'bg-tertiary/20 text-tertiary border border-tertiary/50 font-bold'
+                      : 'hover:bg-surface-container-high text-on-surface'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px] text-tertiary mt-0.5">{sub.icon}</span>
+                  <div>
+                    <div className="text-[11px] font-bold">{sub.label}</div>
+                    <div className="text-[9px] text-outline font-normal">{sub.desc}</div>
+                  </div>
+                </button>
+              ))}
+
+              {activeFlyout === 'rect' && [
+                { id: 'rect', label: 'Rectangle', icon: 'rectangle', desc: 'Emprise rectangulaire (L × H mm)' },
+                { id: 'circle', label: 'Cercle', icon: 'radio_button_unchecked', desc: 'Forme circulaire (Centre + Rayon)' },
+              ].map(sub => (
+                <button
+                  key={sub.id}
+                  onClick={() => {
+                    setActiveTool('rect');
+                    setShapeSubTool(sub.id as ShapeSubTool);
+                    setDraftStart(null);
+                    setActiveFlyout(null);
+                  }}
+                  className={`flex items-start gap-2 p-1.5 rounded transition-all text-left ${
+                    shapeSubTool === sub.id && activeTool === 'rect'
+                      ? 'bg-sky-500/20 text-sky-400 border border-sky-400/50 font-bold'
+                      : 'hover:bg-surface-container-high text-on-surface'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px] text-sky-400 mt-0.5">{sub.icon}</span>
+                  <div>
+                    <div className="text-[11px] font-bold">{sub.label}</div>
+                    <div className="text-[9px] text-outline font-normal">{sub.desc}</div>
+                  </div>
+                </button>
+              ))}
+
+              {activeFlyout === 'polyline' && [
+                { id: 'straight', label: 'Trait / Segments', icon: 'polyline', desc: 'Traits droits successifs (fermer ou Entrée)' },
+                { id: 'freehand', label: 'Libre (Main levée)', icon: 'gesture', desc: 'Tracé fluide au glisser de souris' },
+                { id: 'curve', label: 'Courbe / Arc Bézier', icon: 'gesture_select', desc: 'Arc ou courbe paramétrique 3 points' },
+              ].map(sub => (
+                <button
+                  key={sub.id}
+                  onClick={() => {
+                    setActiveTool('polyline');
+                    setPolylineSubTool(sub.id as PolylineSubTool);
+                    setPolyPoints([]);
+                    setCurveStep(0);
+                    setCurveP1(null);
+                    setCurveP2(null);
+                    setActiveFlyout(null);
+                  }}
+                  className={`flex items-start gap-2 p-1.5 rounded transition-all text-left ${
+                    polylineSubTool === sub.id && activeTool === 'polyline'
+                      ? 'bg-primary/20 text-primary border border-primary/50 font-bold'
+                      : 'hover:bg-surface-container-high text-on-surface'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px] text-primary mt-0.5">{sub.icon}</span>
+                  <div>
+                    <div className="text-[11px] font-bold">{sub.label}</div>
+                    <div className="text-[9px] text-outline font-normal">{sub.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="w-5 h-px bg-outline-variant/30 my-0.5"></div>
 
@@ -2772,7 +3942,9 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             e.dataTransfer.dropEffect = 'copy';
           }}
           onDrop={handleCanvasDrop}
-          className="flex-1 relative overflow-hidden bg-[#06101c] cursor-none"
+          className={`flex-1 relative overflow-hidden bg-[#06101c] ${
+            isPanning ? 'cursor-grabbing' : (isSpaceHeld || activeTool === 'pan') ? 'cursor-grab' : 'cursor-none'
+          }`}
         >
           {activeRail === '3d' ? (
             /* 3D Wireframe / Isometric Model View */
@@ -2815,15 +3987,15 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           ) : (
             /* 2D Plan Viewport (Vector Canvas with Dynamic Entities) */
             <div 
-              className="absolute inset-0 overflow-hidden"
+              className="absolute inset-0 overflow-visible"
               style={{
                 transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${canvasZoom})`,
                 transformOrigin: '0 0',
-                transition: isPanning ? 'none' : 'transform 0.1s ease-out'
+                transition: 'none'
               }}
             >
               {/* Millimeter / Meter CAD Grid Pattern with 20px Points Matrix */}
-              <svg className="absolute inset-0 w-full h-full pointer-events-none" xmlns="http://www.w3.org/2000/svg">
+              <svg className="absolute inset-0 w-full h-full pointer-events-none overflow-visible" xmlns="http://www.w3.org/2000/svg">
                 <defs>
                   {/* Minor 20px Grid with Dot at every intersection */}
                   <pattern id="cad-minor-grid" width="20" height="20" patternUnits="userSpaceOnUse">
@@ -2843,11 +4015,11 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     <line x1="4" y1="2" x2="4" y2="6" stroke="#4cd7f6" strokeWidth="0.8" opacity="0.4" />
                   </pattern>
                 </defs>
-                <rect width="100%" height="100%" fill="url(#cad-major-grid)" />
+                <rect x="-30000" y="-30000" width="60000" height="60000" fill="url(#cad-major-grid)" />
               </svg>
 
               {/* Reactive Architectural Geometry Layer (1:1 CAD Coordinates) */}
-              <svg className="absolute inset-0 w-full h-full">
+              <svg className="absolute inset-0 w-full h-full overflow-visible">
                 <defs>
                   {/* HACHURE BRIQUES: Running bond brick pattern */}
                   <pattern id="hatch-briques" width="28" height="14" patternUnits="userSpaceOnUse">
@@ -3243,6 +4415,71 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   );
                 })}
 
+                {/* 3B-2. FORMES CIRCULAIRES (Outil Forme -> Cercle) */}
+                {entities.filter(e => e.type === 'circle').map(ent => {
+                  const l = getLayer(ent.layerId);
+                  if (!l.visible) return null;
+                  const isSelected = selectedIds.includes(ent.id);
+                  const isHovered = hoveredEntityId === ent.id && !isSelected;
+                  const strokeColor = isSelected ? '#ffb95f' : isHovered ? '#38bdf8' : ent.color || l.color;
+                  const cx = ent.x1;
+                  const cy = ent.y1;
+                  const r = ent.radius ?? Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1);
+                  const rMm = Math.round(r * 10);
+                  const dMm = rMm * 2;
+                  const areaM2 = ent.area ?? Math.round(Math.PI * Math.pow(rMm / 1000, 2) * 100) / 100;
+                  const fillUrl = ent.hatchPattern && ent.hatchPattern !== 'none'
+                    ? `url(#hatch-${ent.hatchPattern})`
+                    : 'rgba(56, 189, 248, 0.08)';
+
+                  return (
+                    <g
+                      key={ent.id}
+                      data-entity-id={ent.id}
+                      onClick={(e) => handleEntityClick(e, ent)}
+                      className="cursor-pointer group"
+                      opacity={l.locked ? 0.6 : 1}
+                    >
+                      {/* Cercle principal */}
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={r}
+                        fill={fillUrl}
+                        stroke={strokeColor}
+                        strokeWidth={isSelected ? 2.5 : isHovered ? 2 : 1.8}
+                        strokeDasharray={isSelected ? '6 3' : undefined}
+                      />
+                      {/* Croix centrale de repère */}
+                      <line x1={cx - 6} y1={cy} x2={cx + 6} y2={cy} stroke={strokeColor} strokeWidth="1" />
+                      <line x1={cx} y1={cy - 6} x2={cx} y2={cy + 6} stroke={strokeColor} strokeWidth="1" />
+                      {/* Ligne de rayon */}
+                      <line x1={cx} y1={cy} x2={cx + r} y2={cy} stroke={strokeColor} strokeWidth="1" strokeDasharray="3 2" />
+
+                      {/* Badge central d'information */}
+                      <g transform={`translate(${cx}, ${cy})`} className="pointer-events-none">
+                        <rect
+                          x="-60"
+                          y="-16"
+                          width="120"
+                          height="32"
+                          rx="4"
+                          fill="#011020"
+                          fillOpacity="0.88"
+                          stroke={strokeColor}
+                          strokeWidth="1"
+                        />
+                        <text x="0" y="-2" textAnchor="middle" fill="#f8fafc" className="text-[10px] font-mono font-bold" fontFamily="JetBrains Mono">
+                          ⌀ {dMm} mm (R: {rMm})
+                        </text>
+                        <text x="0" y="10" textAnchor="middle" fill={strokeColor} className="text-[9px] font-mono font-semibold" fontFamily="JetBrains Mono">
+                          {areaM2} m²
+                        </text>
+                      </g>
+                    </g>
+                  );
+                })}
+
                 {/* 3C. POLYGONES & FORMES DIVERSES À TRAITS MULTIPLES (Outil Polygone L) */}
                 {entities.filter(e => e.type === 'polygon' || e.type === 'polyline').map(ent => {
                   const l = getLayer(ent.layerId);
@@ -3342,6 +4579,57 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                           </text>
                         </g>
                       )}
+                    </g>
+                  );
+                })}
+
+                {/* 3C-2. COURBES & ARCS BÉZIER (Outil Polygone -> Courbe) */}
+                {entities.filter(e => e.type === 'curve').map(ent => {
+                  const l = getLayer(ent.layerId);
+                  if (!l.visible) return null;
+                  const isSelected = selectedIds.includes(ent.id);
+                  const isHovered = hoveredEntityId === ent.id && !isSelected;
+                  const strokeColor = isSelected ? '#ffb95f' : isHovered ? '#38bdf8' : ent.color || l.color;
+                  const cp = ent.curvePoint ?? { x: (ent.x1 + ent.x2) / 2, y: (ent.y1 + ent.y2) / 2 - 30 };
+                  const pathD = `M ${ent.x1} ${ent.y1} Q ${cp.x} ${cp.y} ${ent.x2} ${ent.y2}`;
+                  const chordMm = Math.round(Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1) * 10);
+
+                  return (
+                    <g
+                      key={ent.id}
+                      data-entity-id={ent.id}
+                      onClick={(e) => handleEntityClick(e, ent)}
+                      className="cursor-pointer group"
+                      opacity={l.locked ? 0.6 : 1}
+                    >
+                      {/* Tracé de la courbe */}
+                      <path
+                        d={pathD}
+                        fill="none"
+                        stroke={strokeColor}
+                        strokeWidth={isSelected ? 3 : isHovered ? 2.5 : 2}
+                        strokeDasharray={isSelected ? '6 3' : undefined}
+                      />
+                      {/* Extrémités */}
+                      <circle cx={ent.x1} cy={ent.y1} r="3.5" fill={strokeColor} />
+                      <circle cx={ent.x2} cy={ent.y2} r="3.5" fill={strokeColor} />
+
+                      {/* Lignes de contrôle visibles lors de la sélection */}
+                      {isSelected && (
+                        <g className="pointer-events-none">
+                          <line x1={ent.x1} y1={ent.y1} x2={cp.x} y2={cp.y} stroke="#ffb95f" strokeWidth="0.8" strokeDasharray="3 3" />
+                          <line x1={ent.x2} y1={ent.y2} x2={cp.x} y2={cp.y} stroke="#ffb95f" strokeWidth="0.8" strokeDasharray="3 3" />
+                          <circle cx={cp.x} cy={cp.y} r="5" fill="#ffb95f" stroke="#051424" strokeWidth="1.5" />
+                        </g>
+                      )}
+
+                      {/* Étiquette d'information */}
+                      <g transform={`translate(${cp.x}, ${cp.y - 14})`} className="pointer-events-none">
+                        <rect x="-55" y="-10" width="110" height="20" rx="3" fill="#011020" fillOpacity="0.88" stroke={strokeColor} strokeWidth="1" />
+                        <text x="0" y="4" textAnchor="middle" fill="#f8fafc" className="text-[9px] font-mono font-bold" fontFamily="JetBrains Mono">
+                          ARC {chordMm} mm
+                        </text>
+                      </g>
                     </g>
                   );
                 })}
@@ -3681,42 +4969,113 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                       strokeDasharray="4 3"
                     />
 
-                    {/* Ghost Wall body preview */}
-                    {activeTool === 'wall' && (
-                      <rect
-                        x={Math.min(draftStart.x, cursorPos.x)}
-                        y={Math.min(draftStart.y, cursorPos.y)}
-                        width={Math.max(wallThickness / 10, Math.abs(cursorPos.x - draftStart.x))}
-                        height={Math.max(wallThickness / 10, Math.abs(cursorPos.y - draftStart.y))}
-                        fill="url(#wall-concrete-hatch)"
-                        stroke="#4cd7f6"
-                        strokeWidth="2"
-                        opacity="0.7"
-                      />
-                    )}
+                    {/* Ghost Wall body preview (Sub-outils Mur : Droit, Continu, ou 4 Murs Rectangle) */}
+                    {activeTool === 'wall' && wallSubTool === 'rect' && (() => {
+                      const minX = Math.min(draftStart.x, cursorPos.x);
+                      const minY = Math.min(draftStart.y, cursorPos.y);
+                      const w = Math.max(10, Math.abs(cursorPos.x - draftStart.x));
+                      const h = Math.max(10, Math.abs(cursorPos.y - draftStart.y));
+                      const wt = wallThickness / 10;
+                      const wMm = Math.round(w * 10);
+                      const hMm = Math.round(h * 10);
+                      const areaM2 = ((wMm * hMm) / 1000000).toFixed(2);
+                      return (
+                        <g>
+                          <rect x={minX} y={minY} width={w} height={h} fill="none" stroke="#4cd7f6" strokeWidth="2" strokeDasharray="4 3" />
+                          <rect x={minX + wt} y={minY + wt} width={Math.max(0, w - wt * 2)} height={Math.max(0, h - wt * 2)} fill="none" stroke="#4cd7f6" strokeWidth="1.5" strokeDasharray="2 2" />
+                          <path
+                            d={`M ${minX} ${minY} H ${minX + w} V ${minY + h} H ${minX} Z M ${minX + wt} ${minY + wt} V ${minY + h - wt} H ${minX + w - wt} V ${minY + wt} Z`}
+                            fill="url(#wall-concrete-hatch)"
+                            fillRule="evenodd"
+                            opacity="0.8"
+                          />
+                          <circle cx={minX} cy={minY} r="3" fill="#4cd7f6" />
+                          <circle cx={minX + w} cy={minY} r="3" fill="#4cd7f6" />
+                          <circle cx={minX + w} cy={minY + h} r="3" fill="#4cd7f6" />
+                          <circle cx={minX} cy={minY + h} r="3" fill="#4cd7f6" />
+                          <g transform={`translate(${minX + w / 2}, ${minY + h / 2})`}>
+                            <rect x="-75" y="-18" width="150" height="36" rx="4" fill="#011020" fillOpacity="0.92" stroke="#4cd7f6" strokeWidth="1.2" />
+                            <text x="0" y="-3" textAnchor="middle" fill="#4cd7f6" className="text-[11px] font-mono font-bold" fontFamily="JetBrains Mono">
+                              4 MURS : {wMm} × {hMm} mm
+                            </text>
+                            <text x="0" y="11" textAnchor="middle" fill="#94a3b8" className="text-[9px] font-mono" fontFamily="JetBrains Mono">
+                              Emprise : {areaM2} m² (Ép {wallThickness}mm)
+                            </text>
+                          </g>
+                        </g>
+                      );
+                    })()}
+
+                    {activeTool === 'wall' && wallSubTool !== 'rect' && (() => {
+                      const angle = Math.atan2(cursorPos.y - draftStart.y, cursorPos.x - draftStart.x);
+                      const halfThick = wallThickness / 20;
+                      const perpX = Math.sin(angle) * halfThick;
+                      const perpY = -Math.cos(angle) * halfThick;
+                      const pts = [
+                        `${draftStart.x + perpX},${draftStart.y + perpY}`,
+                        `${cursorPos.x + perpX},${cursorPos.y + perpY}`,
+                        `${cursorPos.x - perpX},${cursorPos.y - perpY}`,
+                        `${draftStart.x - perpX},${draftStart.y - perpY}`,
+                      ].join(' ');
+                      return (
+                        <g>
+                          <polygon points={pts} fill="url(#wall-concrete-hatch)" stroke="#4cd7f6" strokeWidth="2" opacity="0.85" />
+                          <line x1={draftStart.x} y1={draftStart.y} x2={cursorPos.x} y2={cursorPos.y} stroke="#4cd7f6" strokeWidth="1" strokeDasharray="3 3" />
+                        </g>
+                      );
+                    })()}
 
                     {/* Ghost Cloison / Partition body preview */}
-                    {activeTool === 'partition' && (
-                      <g>
-                        <rect
-                          x={Math.min(draftStart.x, cursorPos.x)}
-                          y={Math.min(draftStart.y, cursorPos.y)}
-                          width={Math.max(partitionThickness / 10, Math.abs(cursorPos.x - draftStart.x))}
-                          height={Math.max(partitionThickness / 10, Math.abs(cursorPos.y - draftStart.y))}
-                          fill="#182736"
-                          stroke="#4edea3"
-                          strokeWidth="2"
-                          opacity="0.85"
-                        />
-                        {/* Modules count badge */}
-                        <g transform={`translate(${(draftStart.x + cursorPos.x) / 2}, ${(draftStart.y + cursorPos.y) / 2 + 18})`}>
-                          <rect x="-65" y="-10" width="130" height="20" rx="3" fill="#010f1f" stroke="#4edea3" strokeWidth="1" />
-                          <text x="0" y="4" textAnchor="middle" fill="#4edea3" className="text-[10px] font-mono font-bold" fontFamily="JetBrains Mono">
-                            {Math.round(currentDrawDist / (settings.gridSnapSize * 10))} pts (grille {settings.gridSnapSize}px)
-                          </text>
+                    {activeTool === 'partition' && partitionSubTool === 'rect' && (() => {
+                      const minX = Math.min(draftStart.x, cursorPos.x);
+                      const minY = Math.min(draftStart.y, cursorPos.y);
+                      const w = Math.max(10, Math.abs(cursorPos.x - draftStart.x));
+                      const h = Math.max(10, Math.abs(cursorPos.y - draftStart.y));
+                      const pt = partitionThickness / 10;
+                      const wMm = Math.round(w * 10);
+                      const hMm = Math.round(h * 10);
+                      const areaM2 = ((wMm * hMm) / 1000000).toFixed(2);
+                      return (
+                        <g>
+                          <rect x={minX} y={minY} width={w} height={h} fill="none" stroke="#4edea3" strokeWidth="2" strokeDasharray="4 3" />
+                          <rect x={minX + pt} y={minY + pt} width={Math.max(0, w - pt * 2)} height={Math.max(0, h - pt * 2)} fill="none" stroke="#4edea3" strokeWidth="1.5" strokeDasharray="2 2" />
+                          <path
+                            d={`M ${minX} ${minY} H ${minX + w} V ${minY + h} H ${minX} Z M ${minX + pt} ${minY + pt} V ${minY + h - pt} H ${minX + w - pt} V ${minY + pt} Z`}
+                            fill="#182736"
+                            fillRule="evenodd"
+                            opacity="0.9"
+                          />
+                          <g transform={`translate(${minX + w / 2}, ${minY + h / 2})`}>
+                            <rect x="-75" y="-18" width="150" height="36" rx="4" fill="#011020" fillOpacity="0.92" stroke="#4edea3" strokeWidth="1.2" />
+                            <text x="0" y="-3" textAnchor="middle" fill="#4edea3" className="text-[11px] font-mono font-bold" fontFamily="JetBrains Mono">
+                              4 CLOISONS : {wMm} × {hMm} mm
+                            </text>
+                            <text x="0" y="11" textAnchor="middle" fill="#94a3b8" className="text-[9px] font-mono" fontFamily="JetBrains Mono">
+                              Surface : {areaM2} m² (Ép {partitionThickness}mm)
+                            </text>
+                          </g>
                         </g>
-                      </g>
-                    )}
+                      );
+                    })()}
+
+                    {activeTool === 'partition' && partitionSubTool !== 'rect' && (() => {
+                      const angle = Math.atan2(cursorPos.y - draftStart.y, cursorPos.x - draftStart.x);
+                      const halfThick = partitionThickness / 20;
+                      const perpX = Math.sin(angle) * halfThick;
+                      const perpY = -Math.cos(angle) * halfThick;
+                      const pts = [
+                        `${draftStart.x + perpX},${draftStart.y + perpY}`,
+                        `${cursorPos.x + perpX},${cursorPos.y + perpY}`,
+                        `${cursorPos.x - perpX},${cursorPos.y - perpY}`,
+                        `${draftStart.x - perpX},${draftStart.y - perpY}`,
+                      ].join(' ');
+                      return (
+                        <g>
+                          <polygon points={pts} fill="#182736" stroke="#4edea3" strokeWidth="2" opacity="0.9" />
+                          <line x1={draftStart.x} y1={draftStart.y} x2={cursorPos.x} y2={cursorPos.y} stroke="#4edea3" strokeWidth="1" strokeDasharray="3 3" />
+                        </g>
+                      );
+                    })()}
 
                     {/* Ghost Dimension preview (for tool dim) */}
                     {activeTool === 'dim' && (
@@ -3754,8 +5113,33 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                       </g>
                     )}
 
-                    {/* Ghost Rectangle Body preview */}
-                    {activeTool === 'rect' && (
+                    {/* Ghost Forme preview (Rectangle ou Cercle selon shapeSubTool) */}
+                    {activeTool === 'rect' && shapeSubTool === 'circle' && (() => {
+                      const r = Math.hypot(cursorPos.x - draftStart.x, cursorPos.y - draftStart.y);
+                      const rMm = Math.round(r * 10);
+                      const dMm = rMm * 2;
+                      const areaM2 = (Math.PI * Math.pow(rMm / 1000, 2)).toFixed(2);
+                      return (
+                        <g>
+                          <circle cx={draftStart.x} cy={draftStart.y} r={r} fill="rgba(56, 189, 248, 0.12)" stroke="#38bdf8" strokeWidth="2" strokeDasharray="5 3" />
+                          <line x1={draftStart.x - 8} y1={draftStart.y} x2={draftStart.x + 8} y2={draftStart.y} stroke="#38bdf8" strokeWidth="1.2" />
+                          <line x1={draftStart.x} y1={draftStart.y - 8} x2={draftStart.x} y2={draftStart.y + 8} stroke="#38bdf8" strokeWidth="1.2" />
+                          <line x1={draftStart.x} y1={draftStart.y} x2={cursorPos.x} y2={cursorPos.y} stroke="#38bdf8" strokeWidth="1.5" strokeDasharray="3 2" />
+                          <circle cx={cursorPos.x} cy={cursorPos.y} r="3.5" fill="#38bdf8" />
+                          <g transform={`translate(${draftStart.x}, ${draftStart.y})`}>
+                            <rect x="-65" y="-18" width="130" height="36" rx="4" fill="#011020" fillOpacity="0.92" stroke="#38bdf8" strokeWidth="1.2" />
+                            <text x="0" y="-3" textAnchor="middle" fill="#38bdf8" className="text-[11px] font-mono font-bold" fontFamily="JetBrains Mono">
+                              ⌀ {dMm} mm (R: {rMm} mm)
+                            </text>
+                            <text x="0" y="11" textAnchor="middle" fill="#94a3b8" className="text-[9px] font-mono" fontFamily="JetBrains Mono">
+                              Surface : {areaM2} m²
+                            </text>
+                          </g>
+                        </g>
+                      );
+                    })()}
+
+                    {activeTool === 'rect' && shapeSubTool === 'rect' && (
                       <g>
                         <rect
                           x={Math.min(draftStart.x, cursorPos.x)}
@@ -3796,7 +5180,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     )}
 
                     {/* Dynamic dimension tag hovering above (for wall and partition) */}
-                    {activeTool !== 'dim' && activeTool !== 'rect' && (
+                    {activeTool !== 'dim' && activeTool !== 'rect' && wallSubTool !== 'rect' && (
                       <g transform={`translate(${(draftStart.x + cursorPos.x) / 2}, ${(draftStart.y + cursorPos.y) / 2 - 18})`}>
                         <rect x="-35" y="-10" width="70" height="20" rx="3" fill="#010f1f" stroke={activeTool === 'partition' ? '#4edea3' : '#4cd7f6'} strokeWidth="1" />
                         <text x="0" y="4" textAnchor="middle" fill={activeTool === 'partition' ? '#4edea3' : '#4cd7f6'} className="text-[11px] font-mono font-bold" fontFamily="JetBrains Mono">
@@ -3870,6 +5254,73 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                             {segDist} mm
                           </text>
                         </g>
+                      );
+                    })()}
+                  </g>
+                )}
+
+                {/* 7B-2. LIVE FREEHAND TRACE PREVIEW (Sous-outil Tracé Libre) */}
+                {activeTool === 'polyline' && polylineSubTool === 'freehand' && isDrawingFreehand && freehandPoints.length > 1 && (
+                  <g id="active-ghost-freehand" className="pointer-events-none">
+                    <polyline
+                      points={freehandPoints.map(p => `${p.x},${p.y}`).join(' ')}
+                      fill="none"
+                      stroke="#38bdf8"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <circle cx={freehandPoints[0].x} cy={freehandPoints[0].y} r="4" fill="#22c55e" stroke="#051424" strokeWidth="1" />
+                    <circle cx={cursorPos.x} cy={cursorPos.y} r="4" fill="#38bdf8" stroke="#051424" strokeWidth="1" />
+                    {freehandPoints.length > 10 && Math.hypot(cursorPos.x - freehandPoints[0].x, cursorPos.y - freehandPoints[0].y) < 24 && (
+                      <circle cx={freehandPoints[0].x} cy={freehandPoints[0].y} r="12" fill="none" stroke="#22c55e" strokeWidth="2" strokeDasharray="3 3" />
+                    )}
+                  </g>
+                )}
+
+                {/* 7B-3. LIVE ARC / COURBE BÉZIER PREVIEW (Sous-outil Courbe) */}
+                {activeTool === 'polyline' && polylineSubTool === 'curve' && (
+                  <g id="active-ghost-curve" className="pointer-events-none">
+                    {/* Étape 1 : P1 fixé, élastique vers cursorPos pour fixer P2 */}
+                    {curveStep === 1 && curveP1 && (() => {
+                      const chord = Math.round(Math.hypot(cursorPos.x - curveP1.x, cursorPos.y - curveP1.y) * 10);
+                      const midX = (curveP1.x + cursorPos.x) / 2;
+                      const midY = (curveP1.y + cursorPos.y) / 2;
+                      return (
+                        <>
+                          <circle cx={curveP1.x} cy={curveP1.y} r="4.5" fill="#38bdf8" stroke="#051424" strokeWidth="1.5" />
+                          <line x1={curveP1.x} y1={curveP1.y} x2={cursorPos.x} y2={cursorPos.y} stroke="#38bdf8" strokeWidth="2" strokeDasharray="4 3" />
+                          <circle cx={cursorPos.x} cy={cursorPos.y} r="4" fill="#ffb95f" stroke="#051424" strokeWidth="1.5" />
+                          <g transform={`translate(${midX}, ${midY - 14})`}>
+                            <rect x="-45" y="-10" width="90" height="20" rx="3" fill="#011020" fillOpacity="0.9" stroke="#38bdf8" strokeWidth="1" />
+                            <text x="0" y="4" textAnchor="middle" fill="#38bdf8" className="text-[10px] font-mono font-bold" fontFamily="JetBrains Mono">
+                              Corde : {chord} mm
+                            </text>
+                          </g>
+                        </>
+                      );
+                    })()}
+
+                    {/* Étape 2 : P1 et P2 fixés, modélisation de la courbure avec le curseur */}
+                    {curveStep === 2 && curveP1 && curveP2 && (() => {
+                      const chord = Math.round(Math.hypot(curveP2.x - curveP1.x, curveP2.y - curveP1.y) * 10);
+                      const pathD = `M ${curveP1.x} ${curveP1.y} Q ${cursorPos.x} ${cursorPos.y} ${curveP2.x} ${curveP2.y}`;
+                      return (
+                        <>
+                          <line x1={curveP1.x} y1={curveP1.y} x2={curveP2.x} y2={curveP2.y} stroke="#64748b" strokeWidth="1" strokeDasharray="3 3" />
+                          <line x1={curveP1.x} y1={curveP1.y} x2={cursorPos.x} y2={cursorPos.y} stroke="#ffb95f" strokeWidth="1" strokeDasharray="3 3" />
+                          <line x1={curveP2.x} y1={curveP2.y} x2={cursorPos.x} y2={cursorPos.y} stroke="#ffb95f" strokeWidth="1" strokeDasharray="3 3" />
+                          <path d={pathD} fill="none" stroke="#ffb95f" strokeWidth="2.5" />
+                          <circle cx={curveP1.x} cy={curveP1.y} r="4.5" fill="#38bdf8" stroke="#051424" strokeWidth="1.5" />
+                          <circle cx={curveP2.x} cy={curveP2.y} r="4.5" fill="#38bdf8" stroke="#051424" strokeWidth="1.5" />
+                          <circle cx={cursorPos.x} cy={cursorPos.y} r="5" fill="#ffb95f" stroke="#051424" strokeWidth="1.5" />
+                          <g transform={`translate(${cursorPos.x}, ${cursorPos.y - 16})`}>
+                            <rect x="-65" y="-10" width="130" height="20" rx="3" fill="#011020" fillOpacity="0.95" stroke="#ffb95f" strokeWidth="1.2" />
+                            <text x="0" y="4" textAnchor="middle" fill="#ffb95f" className="text-[10px] font-mono font-bold" fontFamily="JetBrains Mono">
+                              ARC (Corde {chord} mm)
+                            </text>
+                          </g>
+                        </>
                       );
                     })()}
                   </g>
@@ -4272,10 +5723,217 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     </g>
                   </g>
                 )}
+
+                {/* 10. INTERACTIVE CAD GRIP POINTS & MANIPULATION HANDLES LAYER */}
+                {activeTool === 'select' && entities.filter(e => selectedIds.includes(e.id)).map(ent => {
+                  const l = getLayer(ent.layerId);
+                  if (!l.visible || l.locked) return null;
+
+                  // A. WALLS & PARTITIONS & LINES & DIMS
+                  if (['wall', 'partition', 'line', 'dim'].includes(ent.type)) {
+                    const midX = (ent.x1 + ent.x2) / 2;
+                    const midY = (ent.y1 + ent.y2) / 2;
+                    const lenMm = Math.round(Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1) * 10);
+                    const angDeg = Math.round((Math.atan2(ent.y2 - ent.y1, ent.x2 - ent.x1) * 180) / Math.PI);
+
+                    return (
+                      <g key={`interactive-grips-${ent.id}`} className="select-none pointer-events-auto">
+                        {/* Grip P1 (Point de départ - étirement) */}
+                        <g
+                          className="cursor-crosshair group"
+                          onMouseDown={(e) => handleGripMouseDown(ent, 'p1', e)}
+                          onMouseEnter={() => setHoveredGrip({ entityId: ent.id, gripType: 'p1' })}
+                          onMouseLeave={() => setHoveredGrip(null)}
+                        >
+                          <circle cx={ent.x1} cy={ent.y1} r="9" fill="transparent" />
+                          <rect
+                            x={ent.x1 - 4}
+                            y={ent.y1 - 4}
+                            width="8"
+                            height="8"
+                            fill={activeGrip?.entityId === ent.id && activeGrip?.gripType === 'p1' ? '#ffb95f' : '#4cd7f6'}
+                            stroke="#051424"
+                            strokeWidth="1.5"
+                            className="transition-transform group-hover:scale-125"
+                          />
+                        </g>
+
+                        {/* Grip P2 (Point d'arrivée - étirement) */}
+                        <g
+                          className="cursor-crosshair group"
+                          onMouseDown={(e) => handleGripMouseDown(ent, 'p2', e)}
+                          onMouseEnter={() => setHoveredGrip({ entityId: ent.id, gripType: 'p2' })}
+                          onMouseLeave={() => setHoveredGrip(null)}
+                        >
+                          <circle cx={ent.x2} cy={ent.y2} r="9" fill="transparent" />
+                          <rect
+                            x={ent.x2 - 4}
+                            y={ent.y2 - 4}
+                            width="8"
+                            height="8"
+                            fill={activeGrip?.entityId === ent.id && activeGrip?.gripType === 'p2' ? '#ffb95f' : '#4cd7f6'}
+                            stroke="#051424"
+                            strokeWidth="1.5"
+                            className="transition-transform group-hover:scale-125"
+                          />
+                        </g>
+
+                        {/* Grip Mid (Milieu - déplacement complet de l'élément) */}
+                        <g
+                          className="cursor-move group"
+                          onMouseDown={(e) => handleGripMouseDown(ent, 'mid', e)}
+                          onMouseEnter={() => setHoveredGrip({ entityId: ent.id, gripType: 'mid' })}
+                          onMouseLeave={() => setHoveredGrip(null)}
+                        >
+                          <circle cx={midX} cy={midY} r="9" fill="transparent" />
+                          <rect
+                            x={midX - 4}
+                            y={midY - 4}
+                            width="8"
+                            height="8"
+                            fill="#ffb95f"
+                            stroke="#051424"
+                            strokeWidth="1.5"
+                            className="transition-transform group-hover:scale-125"
+                          />
+                        </g>
+
+                        {/* Live HUD tooltip when dragging grip */}
+                        {activeGrip?.entityId === ent.id && (
+                          <g transform={`translate(${midX}, ${midY - 18})`} className="pointer-events-none">
+                            <rect x="-65" y="-12" width="130" height="22" rx="4" fill="#031628" fillOpacity="0.95" stroke="#4cd7f6" strokeWidth="1" />
+                            <text x="0" y="3" textAnchor="middle" fill="#4cd7f6" className="text-[10px] font-mono font-bold" fontFamily="JetBrains Mono">
+                              L: {lenMm} mm · {angDeg}°
+                            </text>
+                          </g>
+                        )}
+                      </g>
+                    );
+                  }
+
+                  // B. ROOMS & RECTANGLES (Coins et arêtes étirables)
+                  if (ent.type === 'room' || ent.type === 'rect') {
+                    const minX = Math.min(ent.x1, ent.x2);
+                    const maxX = Math.max(ent.x1, ent.x2);
+                    const minY = Math.min(ent.y1, ent.y2);
+                    const maxY = Math.max(ent.y1, ent.y2);
+                    const midX = (minX + maxX) / 2;
+                    const midY = (minY + maxY) / 2;
+
+                    const handles = [
+                      { id: 'corner-tl', x: minX, y: minY, cursor: 'cursor-nwse-resize' },
+                      { id: 'corner-tr', x: maxX, y: minY, cursor: 'cursor-nesw-resize' },
+                      { id: 'corner-br', x: maxX, y: maxY, cursor: 'cursor-nwse-resize' },
+                      { id: 'corner-bl', x: minX, y: maxY, cursor: 'cursor-nesw-resize' },
+                      { id: 'edge-top', x: midX, y: minY, cursor: 'cursor-ns-resize' },
+                      { id: 'edge-right', x: maxX, y: midY, cursor: 'cursor-ew-resize' },
+                      { id: 'edge-bottom', x: midX, y: maxY, cursor: 'cursor-ns-resize' },
+                      { id: 'edge-left', x: minX, y: midY, cursor: 'cursor-ew-resize' },
+                    ];
+
+                    return (
+                      <g key={`interactive-grips-room-${ent.id}`} className="select-none pointer-events-auto">
+                        {handles.map(h => (
+                          <g
+                            key={h.id}
+                            className={`${h.cursor} group`}
+                            onMouseDown={(e) => handleGripMouseDown(ent, h.id, e)}
+                            onMouseEnter={() => setHoveredGrip({ entityId: ent.id, gripType: h.id })}
+                            onMouseLeave={() => setHoveredGrip(null)}
+                          >
+                            <circle cx={h.x} cy={h.y} r="9" fill="transparent" />
+                            <rect
+                              x={h.x - 4}
+                              y={h.y - 4}
+                              width="8"
+                              height="8"
+                              fill={activeGrip?.entityId === ent.id && activeGrip?.gripType === h.id ? '#ffb95f' : '#4cd7f6'}
+                              stroke="#051424"
+                              strokeWidth="1.5"
+                              className="transition-transform group-hover:scale-125"
+                            />
+                          </g>
+                        ))}
+
+                        {/* Center Move Handle */}
+                        <g
+                          className="cursor-move group"
+                          onMouseDown={(e) => handleGripMouseDown(ent, 'mid', e)}
+                          onMouseEnter={() => setHoveredGrip({ entityId: ent.id, gripType: 'mid' })}
+                          onMouseLeave={() => setHoveredGrip(null)}
+                        >
+                          <circle cx={midX} cy={midY} r="10" fill="transparent" />
+                          <circle
+                            cx={midX}
+                            cy={midY}
+                            r="5"
+                            fill="#ffb95f"
+                            stroke="#051424"
+                            strokeWidth="1.5"
+                            className="transition-transform group-hover:scale-125"
+                          />
+                        </g>
+                      </g>
+                    );
+                  }
+
+                  // C. POLYLINE / POLYGON
+                  if (ent.type === 'polyline' && ent.points) {
+                    return (
+                      <g key={`interactive-grips-poly-${ent.id}`} className="select-none pointer-events-auto">
+                        {ent.points.map((pt, idx) => (
+                          <g
+                            key={`poly-pt-${idx}`}
+                            className="cursor-crosshair group"
+                            onMouseDown={(e) => handleGripMouseDown(ent, `point-${idx}`, e)}
+                            onMouseEnter={() => setHoveredGrip({ entityId: ent.id, gripType: `point-${idx}` })}
+                            onMouseLeave={() => setHoveredGrip(null)}
+                          >
+                            <circle cx={pt.x} cy={pt.y} r="8" fill="transparent" />
+                            <rect
+                              x={pt.x - 3.5}
+                              y={pt.y - 3.5}
+                              width="7"
+                              height="7"
+                              fill={activeGrip?.entityId === ent.id && activeGrip?.gripType === `point-${idx}` ? '#ffb95f' : '#4cd7f6'}
+                              stroke="#051424"
+                              strokeWidth="1.5"
+                              className="transition-transform group-hover:scale-125"
+                            />
+                          </g>
+                        ))}
+                      </g>
+                    );
+                  }
+
+                  // D. BLOCS MOBILIERS
+                  if (ent.type === 'furniture') {
+                    const bx1 = ent.x1;
+                    const by1 = ent.y1;
+                    const bx2 = ent.x2 || (bx1 + 80);
+                    const by2 = ent.y2 || (by1 + 60);
+                    const midX = (bx1 + bx2) / 2;
+                    const midY = (by1 + by2) / 2;
+
+                    return (
+                      <g key={`interactive-grips-furniture-${ent.id}`} className="select-none pointer-events-auto">
+                        <g
+                          className="cursor-move group"
+                          onMouseDown={(e) => handleGripMouseDown(ent, 'mid', e)}
+                        >
+                          <circle cx={midX} cy={midY} r="10" fill="transparent" />
+                          <circle cx={midX} cy={midY} r="5" fill="#ffb95f" stroke="#051424" strokeWidth="1.5" />
+                        </g>
+                      </g>
+                    );
+                  }
+
+                  return null;
+                })}
               </svg>
 
               {/* LIVE FULL CAD CROSSHAIR CURSOR BASE */}
-              {isOverCanvas && (
+              {isOverCanvas && !isPanning && !(isSpaceHeld || activeTool === 'pan') && (
                 <div className="absolute inset-0 pointer-events-none">
                   {/* Full-screen crosshair axis lines */}
                   <div
@@ -4286,6 +5944,28 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     className="absolute top-0 bottom-0 w-px bg-primary/45 pointer-events-none"
                     style={{ left: `${cursorPos.x}px` }}
                   />
+
+                  {/* Dynamic tag when moving entities */}
+                  {isDraggingEntities && (
+                    <div
+                      className="absolute z-50 bg-[#031628]/95 px-2 py-1 rounded border border-primary/50 text-[10px] font-mono text-primary shadow-xl pointer-events-none flex items-center gap-1.5"
+                      style={{ left: `${cursorPos.x + 14}px`, top: `${cursorPos.y + 14}px` }}
+                    >
+                      <span className="material-symbols-outlined text-[13px] text-primary">open_with</span>
+                      <span>DÉPLACEMENT · ΔX: {Math.round(dragDelta.dx * 10)}mm · ΔY: {Math.round(dragDelta.dy * 10)}mm</span>
+                    </div>
+                  )}
+
+                  {/* Dynamic tag when modifying grip */}
+                  {activeGrip && (
+                    <div
+                      className="absolute z-50 bg-[#031628]/95 px-2 py-1 rounded border border-amber-400/60 text-[10px] font-mono text-amber-300 shadow-xl pointer-events-none flex items-center gap-1.5"
+                      style={{ left: `${cursorPos.x + 14}px`, top: `${cursorPos.y + 14}px` }}
+                    >
+                      <span className="material-symbols-outlined text-[13px] text-amber-400">tune</span>
+                      <span>ÉTIREMENT POIGNÉE [{activeGrip.gripType.toUpperCase()}]</span>
+                    </div>
+                  )}
 
                   {/* Cursor Center Base: Pickbox (Selection), Ruler (Measure) or Cross Aperture (Draw) */}
                   {activeTool === 'select' ? (
@@ -4377,6 +6057,64 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               )}
             </div>
           )}
+
+          {/* FLOATING CAD VIEWPORT & ZOOM NAVIGATION HUD WIDGET */}
+          <div className="absolute bottom-3 right-4 z-30 flex items-center gap-1.5 bg-surface-container-lowest/95 backdrop-blur border border-outline-variant/40 rounded-lg p-1.5 shadow-2xl font-mono text-xs pointer-events-auto select-none">
+            {/* Tool Pan toggle */}
+            <button
+              onClick={() => setActiveTool(activeTool === 'pan' ? 'select' : 'pan')}
+              className={`px-2 py-1 rounded transition-all flex items-center gap-1 text-[11px] ${
+                activeTool === 'pan' || isSpaceHeld
+                  ? 'bg-primary text-on-primary font-bold shadow-md'
+                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high'
+              }`}
+              title="Outil Panoramique (Maintenir Espace ou Clic Molette)"
+            >
+              <span className="material-symbols-outlined text-[15px]">pan_tool</span>
+              <span className="hidden sm:inline">PAN</span>
+            </button>
+
+            <div className="h-4 w-px bg-outline-variant/40"></div>
+
+            {/* Zoom Out */}
+            <button
+              onClick={handleZoomOut}
+              className="w-7 h-7 rounded flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+              title="Zoom Arrière (- ou Molette bas)"
+            >
+              <span className="material-symbols-outlined text-[17px]">remove</span>
+            </button>
+
+            {/* Zoom Percent display & reset */}
+            <button
+              onClick={handleZoomReset}
+              className="px-2 py-0.5 rounded bg-surface-container-low hover:bg-surface-container text-primary font-bold font-mono text-[11px] border border-primary/25 transition-all hover:scale-105"
+              title="Échelle de zoom actuelle (Cliquez pour 100%)"
+            >
+              {Math.round(canvasZoom * 100)}%
+            </button>
+
+            {/* Zoom In */}
+            <button
+              onClick={handleZoomIn}
+              className="w-7 h-7 rounded flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+              title="Zoom Avant (+ ou Molette haut)"
+            >
+              <span className="material-symbols-outlined text-[17px]">add</span>
+            </button>
+
+            <div className="h-4 w-px bg-outline-variant/40"></div>
+
+            {/* Zoom Fit / Cadrer Tout */}
+            <button
+              onClick={handleZoomFit}
+              className="px-2 py-1 rounded text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex items-center gap-1 text-[11px]"
+              title="Zoom Étendu / Cadrer tout le plan (Z E)"
+            >
+              <span className="material-symbols-outlined text-[15px]">fit_screen</span>
+              <span className="hidden md:inline">CADRER</span>
+            </button>
+          </div>
 
           {/* VIEWPORT SCALE / METADATA WATERMARK */}
           <div className="absolute bottom-3 left-4 z-20 pointer-events-none flex flex-col gap-0.5">
@@ -4927,6 +6665,17 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               {settings.dynHud && <span className="w-1.5 h-1.5 rounded-full bg-primary"></span>}
               <span>DYN</span>
             </button>
+
+            {onOpenTutorial && (
+              <button
+                onClick={onOpenTutorial}
+                className="px-2 py-0.5 rounded font-mono text-[10px] font-bold flex items-center gap-1 bg-sky-950/70 hover:bg-sky-900 border border-sky-400/40 text-sky-300 transition-colors ml-1"
+                title="Ouvrir le Grand Cours & Tutoriel CAO de A à Z (11 modules)"
+              >
+                <span className="material-symbols-outlined text-[13px] text-sky-400">school</span>
+                <span className="hidden sm:inline">COURS & TUTO</span>
+              </button>
+            )}
           </div>
         </div>
       </footer>

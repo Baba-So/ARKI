@@ -12,6 +12,7 @@ import { AuthScreen } from './components/AuthScreen.tsx';
 import { NewProjectModal } from './components/NewProjectModal.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
 import { ExportModal } from './components/ExportModal.tsx';
+import { TutorialModal } from './components/TutorialModal.tsx';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('dashboard');
@@ -25,6 +26,7 @@ export default function App() {
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isTutorialModalOpen, setIsTutorialModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Handle project opening from dashboard
@@ -85,6 +87,7 @@ export default function App() {
           onOpenNewProject={() => setIsNewProjectModalOpen(true)}
           onOpenExport={() => setIsExportModalOpen(true)}
           onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+          onOpenTutorial={() => setIsTutorialModalOpen(true)}
           projectName={currentProject.name}
           projectVersion={currentProject.version}
           onResetView={() => {
@@ -113,6 +116,7 @@ export default function App() {
           <CadEditor
             onOpenNewProject={() => setIsNewProjectModalOpen(true)}
             onOpenExport={() => setIsExportModalOpen(true)}
+            onOpenTutorial={() => setIsTutorialModalOpen(true)}
           />
         )}
 
@@ -148,6 +152,12 @@ export default function App() {
         projectName={currentProject.name}
       />
 
+      {/* Grand Cours & Tutoriel CAO Modal (11 Modules) */}
+      <TutorialModal
+        isOpen={isTutorialModalOpen}
+        onClose={() => setIsTutorialModalOpen(false)}
+      />
+
       {/* Command Palette (⌘K) */}
       <CommandPalette
         isOpen={isCommandPaletteOpen}
@@ -155,6 +165,7 @@ export default function App() {
         onNavigate={(screen) => setCurrentScreen(screen)}
         onOpenNewProject={() => setIsNewProjectModalOpen(true)}
         onOpenExport={() => setIsExportModalOpen(true)}
+        onOpenTutorial={() => setIsTutorialModalOpen(true)}
       />
     </div>
   );
