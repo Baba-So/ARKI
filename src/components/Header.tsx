@@ -8,7 +8,6 @@ interface HeaderProps {
   onOpenNewProject: () => void;
   onOpenExport?: () => void;
   onOpenCommandPalette?: () => void;
-  onOpenTutorial?: () => void;
   projectName?: string;
   projectVersion?: string;
   onUndo?: () => void;
@@ -22,7 +21,6 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenNewProject,
   onOpenExport,
   onOpenCommandPalette,
-  onOpenTutorial,
   projectName = 'Villa Horizon',
   projectVersion = 'v1.4',
   onUndo,
@@ -72,37 +70,24 @@ export const Header: React.FC<HeaderProps> = ({
                   </button>
                   {activeMenu === item && (
                     <div 
-                      className="absolute top-full left-0 mt-1 w-56 bg-surface-container-low border border-outline-variant/30 rounded-lg shadow-2xl py-1.5 z-50 text-xs flex flex-col font-sans animate-in fade-in zoom-in-95 duration-100"
+                      className="absolute top-full left-0 mt-1 w-52 bg-surface-container-low border border-outline-variant/30 rounded-lg shadow-2xl py-1.5 z-50 text-xs flex flex-col font-sans animate-in fade-in zoom-in-95 duration-100"
                       onMouseLeave={() => setActiveMenu(null)}
                     >
                       {item === 'Aide' ? (
                         <>
-                          <button 
-                            onClick={() => { onOpenTutorial?.(); setActiveMenu(null); }}
-                            className="px-3 py-1.5 text-left hover:bg-surface-container-high text-primary font-semibold flex items-center justify-between"
-                          >
-                            <span className="flex items-center gap-1.5">
-                              <span className="material-symbols-outlined text-[15px]">school</span>
-                              <span>Grand Cours CAO (A à Z)</span>
-                            </span>
-                            <span className="font-mono text-[9px] bg-primary/20 text-primary px-1 rounded">11 modules</span>
-                          </button>
-                          <button 
-                            onClick={() => { onOpenTutorial?.(); setActiveMenu(null); }}
-                            className="px-3 py-1.5 text-left hover:bg-surface-container-high hover:text-primary flex items-center justify-between"
-                          >
-                            <span className="flex items-center gap-1.5">
-                              <span className="material-symbols-outlined text-[15px]">description</span>
-                              <span>Documentation TUTORIAL.md</span>
-                            </span>
-                          </button>
-                          <div className="h-px bg-outline-variant/20 my-1"></div>
                           <button 
                             onClick={() => { onOpenCommandPalette?.(); setActiveMenu(null); }}
                             className="px-3 py-1.5 text-left hover:bg-surface-container-high hover:text-primary flex items-center justify-between"
                           >
                             <span>Palette de commandes</span>
                             <span className="font-mono text-[10px] text-outline">⌘K</span>
+                          </button>
+                          <button 
+                            onClick={() => { onResetView?.(); setActiveMenu(null); }}
+                            className="px-3 py-1.5 text-left hover:bg-surface-container-high hover:text-primary flex items-center justify-between"
+                          >
+                            <span>Recadrer la vue</span>
+                            <span className="font-mono text-[10px] text-outline">Z+E</span>
                           </button>
                         </>
                       ) : (
@@ -266,17 +251,6 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
         </div>
 
-        {/* Action: Grand Cours & Tuto CAO */}
-        <button
-          onClick={onOpenTutorial}
-          className="flex items-center gap-1.5 bg-sky-950/70 hover:bg-sky-900 border border-sky-400/40 text-sky-300 hover:text-sky-200 px-2.5 py-1.5 rounded transition-all shadow-xs text-xs font-mono font-semibold active:scale-95"
-          type="button"
-          title="Ouvrir le Grand Cours & Tutoriel CAO de A à Z (11 modules)"
-        >
-          <span className="material-symbols-outlined text-[16px] text-sky-400 animate-pulse">school</span>
-          <span className="hidden md:inline">Cours & Tuto</span>
-        </button>
-
         {/* Global Action: New Project */}
         <button
           onClick={onOpenNewProject}
@@ -322,14 +296,6 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 <span className="material-symbols-outlined text-[16px]">architecture</span>
                 <span>Éditeur CAO actif</span>
-              </button>
-
-              <button
-                onClick={() => { onOpenTutorial?.(); setProfileOpen(false); }}
-                className="w-full px-3 py-1.5 text-left hover:bg-surface-container-high text-primary font-semibold flex items-center gap-2"
-              >
-                <span className="material-symbols-outlined text-[16px] text-primary">school</span>
-                <span>Grand Cours CAO (De A à Z)</span>
               </button>
 
               <div className="h-px bg-outline-variant/20 my-1"></div>

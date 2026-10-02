@@ -8,12 +8,10 @@ import { ArckiCadAgent } from '../agent.ts';
 interface CadEditorProps {
   onOpenNewProject: () => void;
   onOpenExport: () => void;
-  onOpenTutorial?: () => void;
 }
 
 export const CadEditor: React.FC<CadEditorProps> = ({
   onOpenExport,
-  onOpenTutorial,
 }) => {
   // Navigation active tab in the left rail: 'plan' | '3d' | 'bim' | 'rendu' | 'config'
   const [activeRail, setActiveRail] = useState<'plan' | '3d' | 'bim' | 'rendu' | 'config'>('plan');
@@ -3666,15 +3664,6 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             >
               <span className="material-symbols-outlined text-[17px]">terminal</span>
             </button>
-            {onOpenTutorial && (
-              <button
-                onClick={onOpenTutorial}
-                className="p-1.5 text-sky-400 hover:text-sky-300 hover:bg-sky-950/40 rounded transition-colors"
-                title="Grand Cours & Tutoriel CAO de A à Z (11 modules)"
-              >
-                <span className="material-symbols-outlined text-[17px]">school</span>
-              </button>
-            )}
           </div>
         </aside>
 
@@ -6665,17 +6654,6 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               {settings.dynHud && <span className="w-1.5 h-1.5 rounded-full bg-primary"></span>}
               <span>DYN</span>
             </button>
-
-            {onOpenTutorial && (
-              <button
-                onClick={onOpenTutorial}
-                className="px-2 py-0.5 rounded font-mono text-[10px] font-bold flex items-center gap-1 bg-sky-950/70 hover:bg-sky-900 border border-sky-400/40 text-sky-300 transition-colors ml-1"
-                title="Ouvrir le Grand Cours & Tutoriel CAO de A à Z (11 modules)"
-              >
-                <span className="material-symbols-outlined text-[13px] text-sky-400">school</span>
-                <span className="hidden sm:inline">COURS & TUTO</span>
-              </button>
-            )}
           </div>
         </div>
       </footer>
