@@ -1,204 +1,195 @@
-# Chapitre 09 — Communication Entre Composants : Inspecteur d'Attributs & Calques
+# Chapitre 09 — Inspecteur de propriétés, calques et communication entre composants
 
-En React, les données circulent de haut en bas (**Top-Down Data Flow**) via les **props**, et les modifications remontent vers le haut via des **fonctions de rappel (callbacks)**.
+Un plan CAO n'est utile que si l'on peut le corriger : changer l'épaisseur d'un mur, déplacer sa ligne de référence, masquer les cotes pour imprimer... Ce chapitre montre comment l'inspecteur (`PropertiesSidebar`) et le gestionnaire de calques (`LayerManager`) dialoguent avec `CadEditor`, qui reste le seul propriétaire des données.
 
-Dans ce chapitre, nous allons concevoir :
-1. **L'Inspecteur d'Attributs (`PropertiesSidebar.tsx`)** : Permet de modifier en direct la longueur, l'angle, l'épaisseur ou les hachures de l'élément sélectionné.
-2. **Le Gestionnaire de Calques (`LayerManager.tsx`)** : Permet d'isoler ou masquer les corps d'état du bâtiment.
+## 🎯 Objectifs
+
+- Comprendre la « remontée d'état » : les enfants ne modifient jamais les données, ils appellent des callbacks du parent.
+- Utiliser `Partial<CadEntity>` pour envoyer des modifications ciblées.
+- Lire `handleUpdateSelectedFields` et ses règles spéciales pour les murs (ligne de référence, épaisseur, ouvertures hébergées).
+- Connaître les blocs de l'inspecteur (géométrie, ligne de référence, texte, ouvertures) et les trois onglets.
+- Maîtriser les calques : visibilité, verrouillage, et leur effet réel sur le dessin et la sélection.
+
+## 📋 Prérequis
+
+- Chapitre 01 et 05 (props, état, `useState`).
+- Chapitre 07 (murs, `refLine`) et chapitre 08 (ouvertures, `hostWallId`).
+
+## 📁 Fichiers concernés
+
+- [`src/components/CadEditor.tsx`](../components/CadEditor.tsx) : `handleUpdateSelectedFields`, `handleToggleVisibility`, `handleToggleLock`, `handleChangeColor`, `handleAddLayer`, `getLayer`, `handleEntityClick`.
+- [`src/components/PropertiesSidebar.tsx`](../components/PropertiesSidebar.tsx) : l'inspecteur.
+- [`src/components/LayerManager.tsx`](../components/LayerManager.tsx) : le gestionnaire de calques.
+- [`src/components/LevelManager.tsx`](../components/LevelManager.tsx) : sélecteur de niveaux (même principe de props/callbacks).
+- [`src/types.ts`](../types.ts) : `CadEntity`, `CadLayer`, `CadLevel`.
 
 ---
 
-## 1. Le Concept de "Lifting State Up" (Remontée d'État)
+## 1. Remontée d'état : un seul propriétaire des données
 
-L'inspecteur a besoin de modifier l'entité sélectionnée, mais la liste `entities` réside dans `CadEditor.tsx`.  
-Plutôt que d'utiliser des bibliothèques externes lourdes comme Redux, la méthode idiomatique React consiste à **remonter l'état au parent commun**, et à passer une fonction `onUpdate` :
+**Concept.** Imaginez un chantier : le conducteur de travaux détient le plan. Les ouvriers (les composants enfants) ne gribouillent pas dessus ; ils lui disent « modifie la cloison 3 : épaisseur 98 mm ». En React, le plan est l'état `entities` de `CadEditor`, et chaque message est une *fonction passée en prop*.
 
-```typescript
-// Définition de la fonction de modification partielle dans le parent :
-const handleUpdateEntity = (id: string, updates: Partial<CadEntity>) => {
-  setEntities(prev =>
-    prev.map(ent => (ent.id === id ? { ...ent, ...updates } : ent))
-  );
+```tsx
+// CadEditor.tsx — rendu de l'inspecteur (extrait)
+<PropertiesSidebar
+  entity={primarySelectedEntity}
+  selectedCount={selectedIds.length}
+  layers={layers}
+  allEntities={entities}
+  onUpdate={handleUpdateSelectedFields}
+  onDelete={handleDeleteSelected}
+  onDuplicate={handleDuplicateSelected}
+  onDeselect={() => setSelectedIds([])}
+  onSnapOpeningToWall={handleSnapOpeningToWall}
+/>
+```
+
+Les données descendent (`entity`, `layers`, `allEntities`), les ordres remontent (`onUpdate`, `onDelete`...). Pas de Redux : à cette taille, des props suffisent, et le flux est facile à suivre.
+
+## 2. `Partial<CadEntity>` : ne dire que ce qui change
+
+`Partial<T>` rend toutes les propriétés de `T` optionnelles. L'inspecteur envoie donc seulement le delta : `onUpdate({ thickness: 98 })`, `onUpdate({ refLine: 'left' })`, `onUpdate({ layerId: 'cloisons' })`. Le parent fusionne : `{ ...e, ...updatedFields }`.
+
+L'interface réelle est `onUpdate: (updatedFields: Partial<CadEntity>) => void` : un seul callback pour tous les champs, au lieu de dix callbacks spécialisés.
+
+---
+
+## 3. `handleUpdateSelectedFields` : la fusion, et ses exceptions
+
+Pour la plupart des champs, la fusion est triviale. Mais pour un mur ou une cloison, changer `refLine` ou `thickness` a des conséquences géométriques :
+
+```tsx
+// CadEditor.tsx
+const handleUpdateSelectedFields = (updatedFields: Partial<CadEntity>) => {
+  if (!primarySelectedEntity) return;
+  recordHistory();                                   // annuler / rétablir
+  const w = primarySelectedEntity;
+  const isWallLike = w.type === 'wall' || w.type === 'partition';
+  if (isWallLike && (updatedFields.refLine !== undefined || updatedFields.thickness !== undefined)) {
+    const oldT = (w.thickness || (w.type === 'partition' ? 72 : 200)) / 10;
+    const newT = (updatedFields.thickness ?? w.thickness ?? (w.type === 'partition' ? 72 : 200)) / 10;
+    const delta = (refSign(updatedFields.refLine ?? w.refLine) * newT) / 2
+                - (refSign(w.refLine) * oldT) / 2;
+    // ... dx, dy = delta le long de la normale du mur
+    setEntities(prev => prev.map(e => {
+      if (e.id === w.id) return { ...e, ...updatedFields, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy };
+      if (e.hostWallId === w.id) return { ...e, x1: e.x1 + dx, /* ... */ };
+      return e;
+    }));
+    return;
+  }
+  setEntities(prev => prev.map(e => (e.id === w.id ? { ...e, ...updatedFields } : e)));
 };
 ```
 
----
+**Pourquoi cette logique ?** L'entité stocke l'*axe* du mur (chapitre 07). La **ligne de référence reste fixe dans le plan** : si vous passez de « Axe » à « Nu gauche », l'axe se décale de la moitié de l'épaisseur, et le corps du mur « glisse » autour de la ligne qui, elle, ne bouge pas. Les portes et fenêtres dont `hostWallId` pointe sur ce mur sont décalées du même vecteur ; sinon elles resteraient dans l'ancienne position, hors du mur. Changer l'épaisseur applique le même calcul (la face de référence ne bouge pas, l'autre face avance ou recule). Si l'épaisseur change, l'épaisseur des ouvertures hébergées est mise à jour aussi. Détails au [chapitre 13](./chapitre_13_murs_ligne_reference_et_raccords.md).
 
-## 2. L'Utilisation du Type TypeScript `Partial<T>`
-
-Le mot-clé générique standard **`Partial<T>`** rend toutes les propriétés d'un type optionnelles.  
-Cela permet à l'inspecteur d'envoyer uniquement les champs qui ont changé (par exemple `{ thickness: 98 }` ou `{ length: 4200 }`) sans avoir à renvoyer l'objet complet !
+`recordHistory()` est appelé *avant* la modification : c'est lui qui empile l'état courant dans la pile d'annulation.
 
 ---
 
-## 3. Implémentation de `PropertiesSidebar.tsx`
+## 4. Anatomie de `PropertiesSidebar`
 
-Voici l'architecture du composant inspecteur :
+Le composant reçoit `entity: CadEntity | null`. L'inspecteur affiche **trois onglets** (`activeSubTab` : `'geom' | 'material' | 'position'`) :
+
+| Onglet | Contenu |
+|---|---|
+| Géométrie (`geom`) | longueur, angle, ligne de référence, épaisseur/hauteur, hachures, texte, cotation, panneau des ouvertures |
+| Matière (`material`) | choix dans `ARCHITECTURAL_MATERIALS` (index `MAT-xx`, lambda, carbone) |
+| Position (`position`) | **calque assigné** (liste déroulante), coordonnées P1/P2, alignement sur la grille 20 px |
+
+### Saisie fluide : états locaux synchronisés
 
 ```tsx
-import React, { useState, useEffect } from 'react';
-import { CadEntity } from '../types.ts';
-
-interface PropertiesSidebarProps {
-  entity: CadEntity;
-  onUpdate: (updates: Partial<CadEntity>) => void;
-  onDelete: () => void;
-  onClose: () => void;
-}
-
-export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
-  entity,
-  onUpdate,
-  onDelete,
-  onClose,
-}) => {
-  // Calcul de la longueur réelle en mm
-  const lengthMm = Math.round(Math.hypot(entity.x2 - entity.x1, entity.y2 - entity.y1) * 10);
-  
-  // État local synchronisé pour la saisie clavier
-  const [localLength, setLocalLength] = useState(lengthMm.toString());
-
-  useEffect(() => {
-    setLocalLength(lengthMm.toString());
-  }, [entity.id, lengthMm]);
-
-  // Modification géométrique : allonge ou raccourcit le mur selon son orientation
-  const handleLengthChange = (newLenMm: number) => {
-    const validLen = Math.max(50, newLenMm);
-    setLocalLength(validLen.toString());
-
-    const angleRad = Math.atan2(entity.y2 - entity.y1, entity.x2 - entity.x1);
-    const newLenPx = validLen / 10;
-
-    // P1 reste fixe, on déplace P2 dans la direction de l'angle
-    const newX2 = Math.round(entity.x1 + newLenPx * Math.cos(angleRad));
-    const newY2 = Math.round(entity.y1 + newLenPx * Math.sin(angleRad));
-
-    onUpdate({ x2: newX2, y2: newY2 });
-  };
-
-  return (
-    <div className="w-80 bg-[#051424] border-l border-outline-variant/30 flex flex-col h-full font-sans select-none">
-      {/* 1. En-tête avec type et bouton de fermeture */}
-      <div className="p-3 bg-surface-container-low border-b border-outline-variant/30 flex items-center justify-between">
-        <span className="font-mono text-xs font-bold text-primary uppercase">
-          {entity.type} · {entity.name}
-        </span>
-        <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>
-      </div>
-
-      {/* 2. Formulaire contrôlé de la Longueur */}
-      <div className="p-4 space-y-4">
-        <div className="space-y-1">
-          <label className="text-[10px] font-mono text-slate-400 uppercase">Longueur (mm)</label>
-          <div className="flex items-center gap-1 bg-[#020d18] px-2 py-1 rounded border border-outline-variant/30">
-            <input
-              type="number"
-              value={localLength}
-              onChange={(e) => {
-                setLocalLength(e.target.value);
-                const val = Number(e.target.value);
-                if (!isNaN(val) && val > 0) handleLengthChange(val);
-              }}
-              className="w-full bg-transparent font-mono text-xs font-bold text-cyan-400 outline-none"
-            />
-            <span className="text-[10px] font-mono text-slate-500">mm</span>
-          </div>
-
-          {/* Boutons de presets rapides */}
-          <div className="grid grid-cols-4 gap-1 pt-1 font-mono text-[9px]">
-            {[1200, 2400, 3600, 4800].map(preset => (
-              <button
-                key={preset}
-                onClick={() => handleLengthChange(preset)}
-                className="py-0.5 rounded bg-surface-container hover:bg-cyan-500 hover:text-slate-900 border border-outline-variant/20 transition-colors"
-              >
-                {preset}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 3. Sélecteur d'épaisseur */}
-        {entity.thickness !== undefined && (
-          <div className="space-y-1">
-            <label className="text-[10px] font-mono text-slate-400 uppercase">Épaisseur</label>
-            <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
-              {[72, 98, 200].map(th => (
-                <button
-                  key={th}
-                  onClick={() => onUpdate({ thickness: th })}
-                  className={`py-1 rounded border transition-all ${
-                    entity.thickness === th
-                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400 font-bold'
-                      : 'bg-surface-container text-slate-400 border-outline-variant/20'
-                  }`}
-                >
-                  {th} mm
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* 4. Bouton de suppression */}
-        <button
-          onClick={onDelete}
-          className="w-full py-1.5 rounded bg-red-950/40 hover:bg-red-900/60 border border-red-500/40 text-red-300 font-mono text-xs font-bold transition-colors"
-        >
-          Supprimer l'élément (Suppr)
-        </button>
-      </div>
-    </div>
-  );
-};
+const [localLength, setLocalLength] = useState(lengthMm.toString());
+useEffect(() => {
+  setLocalLength(lengthMm.toString());
+  /* ... */
+}, [entity.id, lengthMm, rawAngleDeg, entity.thickness, entity.height]);
 ```
 
+Un `<input type="number">` doit pouvoir contenir un texte intermédiaire (« 4 », « 42 », « 420 »...) : on garde donc une copie locale en chaîne, et on la resynchronise quand l'entité change. Longueur et angle recalculent `x2,y2` à partir de P1 (qui reste fixe) via `Math.cos/sin` ; la longueur est bornée entre 50 et 25 000 mm.
+
+### Bloc « Ligne de référence (sens du tracé) »
+Visible seulement pour `wall` et `partition`. Trois boutons (`left`, `center`, `right`, libellés *Nu gauche / Axe / Nu droite*) qui appellent `onUpdate({ refLine: opt.id })`. Le bouton actif se détermine avec `(entity.refLine || 'center') === opt.id` : un mur ancien sans `refLine` est considéré centré.
+
+### Bloc « Texte »
+Visible pour `entity.type === 'text'` : un `<textarea>` relié à `label` et un champ numérique pour `fontSize` (`Math.max(4, ...)`), avec une valeur affichée par défaut de 14 (la même que celle de la création, voir chapitre 07).
+
+### Panneau d'ouverture
+Pour `door` et `window` : largeur (presets 730…, 900 « PMR », baies ≥ 1800), sens du battant (`doorSwing`), inversion (`flipSwing`), angle d'ouverture (`doorAngle`), allège (`sillHeight`), type (`openingType`) et le bouton **réencastrer** (`onSnapOpeningToWall`). Il utilise `hostWall`, déduit de `hostWallId` ou, à défaut, de la proximité des centres.
+
 ---
 
-## 4. Implémentation de `LayerManager.tsx`
+## 5. Les calques : `LayerManager`
 
-Le gestionnaire de calques contrôle la visibilité et le verrouillage de chaque calque :
+Les calques (`CadLayer` : `id`, `name`, `category`, `color`, `visible`, `locked`, `opacity`, `lineweight`...) vivent dans l'état `layers` de `CadEditor`. Le gestionnaire reçoit :
 
 ```tsx
-export const LayerManager: React.FC<{
+interface LayerManagerProps {
   layers: CadLayer[];
-  onToggleVisible: (layerId: string) => void;
+  onToggleVisibility: (layerId: string) => void;
   onToggleLock: (layerId: string) => void;
-}> = ({ layers, onToggleVisible, onToggleLock }) => {
-  return (
-    <div className="p-3 space-y-2 font-mono text-xs">
-      <h3 className="font-bold text-slate-300 uppercase text-[10px]">Calques BIM</h3>
-      <div className="space-y-1">
-        {layers.map(l => (
-          <div key={l.id} className="flex items-center justify-between p-2 rounded bg-surface-container-low border border-outline-variant/20">
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: l.color }} />
-              <span className={l.visible ? 'text-slate-200' : 'text-slate-500 line-through'}>{l.name}</span>
-            </div>
-            <div className="flex items-center gap-1">
-              {/* Oeil Visibilité */}
-              <button onClick={() => onToggleVisible(l.id)} className="p-1 text-slate-400 hover:text-white">
-                {l.visible ? '👁️' : '🙈'}
-              </button>
-              {/* Cadenas Verrouillage */}
-              <button onClick={() => onToggleLock(l.id)} className="p-1 text-slate-400 hover:text-white">
-                {l.locked ? '🔒' : '🔓'}
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
+  onChangeColor: (layerId: string, color: string) => void;
+  onAddLayer?: (name: string, category: CadLayer['category'], color: string) => void;
+  onClose?: () => void;
+  isCompact?: boolean;
+}
 ```
+
+Côté parent, chaque callback est un `setLayers` fonctionnel qui renvoie un *nouveau* tableau :
+
+```tsx
+const handleToggleVisibility = (layerId: string) =>
+  setLayers(prev => prev.map(l => (l.id === layerId ? { ...l, visible: !l.visible } : l)));
+```
+
+Fonctions du composant : filtre de recherche (`searchFilter`), actions de lot (**Tous**, **Aucun**, **Déverr. tout** qui bouclent sur `layers`), formulaire de création, palette de couleurs prédéfinies (`PRESET_COLORS`) et compteur « n obj. » par calque (`entityCount`).
+
+### Que font vraiment visibilité et verrouillage ?
+
+Le calque n'est pas qu'un affichage : il conditionne la **logique**.
+
+- **Masqué** (`!l.visible`) : l'entité n'est pas dessinée (`if (!l.visible) return null` dans le rendu) et n'est ni sélectionnable ni candidate à `findWallSnap` ni à l'accrochage.
+- **Verrouillé** (`l.locked`) : l'entité reste dessinée (opacité 0,6) mais `handleEntityClick` ignore le clic (`if (!l.visible || l.locked) return`). Les outils de création refusent d'écrire dans un calque verrouillé (`alert("Le calque Structures est verrouillé...")`), y compris l'outil Texte pour `cotations`. `findWallSnap` ne propose plus les murs verrouillés.
+
+Les calques normalisés : `structures`, `cloisons`, `ouvertures`, `mobilier`, `cotations`. `getLayer(id)` renvoie le calque demandé, ou le premier par défaut.
+
+### Les niveaux, cousin des calques
+`LevelManager` suit la même recette : il reçoit `levels`, `activeLevelId` et des callbacks (`onSelect`, `onAddAbove`, `onAddBelow`, `onDuplicate`, `onUpdate`, `onDelete`), et ne possède aucune donnée. Un niveau regroupe un jeu complet d'entités ; un calque trie les objets *au sein* d'un niveau. Voir le [chapitre 12](./chapitre_12_gestion_des_niveaux.md).
 
 ---
 
-## Résumé du Chapitre 09
-* Vous maîtrisez le principe de **remontée d'état** et les formulaires contrôlés en React.
-* Vous utilisez `Partial<T>` pour réaliser des mises à jour géométriques ciblées et performantes.
-* Vos composants d'interface communiquent proprement sans couplage rigide.
+## ⚠️ Pièges classiques
 
-👉 **Passons au [Chapitre 10 : Moteur d'Export DXF AutoCAD & SVG](./chapitre_10_moteur_export_dxf_autocad_et_svg.md) pour exporter vos plans dans les standards industriels !**
+- **Modifier `entity` directement** dans l'inspecteur (`entity.thickness = 98`) : React ne détecte rien. Toujours `onUpdate({ ... })`.
+- **Hooks après un `return` conditionnel** : dans `PropertiesSidebar`, `if (!entity) return null;` précède les `useState`. Cela marche parce que le parent ne monte le composant que si une entité est sélectionnée, mais cela enfreint la règle des hooks ; la bonne pratique est de placer le `return` après les hooks.
+- **Oublier les ouvertures hébergées** quand on modifie la géométrie d'un mur : elles resteraient en l'air.
+- **Confondre masqué et verrouillé** : masqué = invisible et inerte ; verrouillé = visible mais protégé.
+- **Mutation de tableau** (`layers.push`) au lieu d'un nouveau tableau : l'interface ne se mettrait pas à jour.
+
+## ✍️ Exercices
+
+**Exercice 1 (facile).** Quelle valeur de `refLine` l'inspecteur affiche-t-il comme active pour un mur dessiné avant l'existence de cette fonctionnalité ?
+
+<details><summary>Solution</summary><code>'center'</code> (« Axe »), à cause de <code>(entity.refLine || 'center')</code>.</details>
+
+**Exercice 2 (moyen).** Un mur de 200 mm en « Axe » passe à « Nu gauche ». De combien l'axe est-il décalé, et que deviennent les portes ?
+
+<details><summary>Indice</summary><code>delta = (refSign(new) × newT)/2 − (refSign(old) × oldT)/2</code> avec <code>T</code> en px.</details>
+<details><summary>Solution</summary><code>newT = oldT = 20 px</code>, <code>refSign('left') = 1</code>, <code>refSign(center) = 0</code> : <code>delta = 10 px</code> (100 mm) le long de la normale. Les ouvertures avec <code>hostWallId</code> égal à l'id du mur reçoivent le même décalage.</details>
+
+**Exercice 3 (avancé).** Ajoutez un bouton « Isoler ce calque » au `LayerManager` qui masque tous les autres. Quel callback utilisez-vous ?
+
+<details><summary>Indice</summary>Réutilisez le motif des boutons « Tous » / « Aucun ».</details>
+<details><summary>Solution</summary>Boucler sur <code>layers</code> : <code>onToggleVisibility(l.id)</code> pour chaque calque visible différent de la cible, et le rendre visible s'il ne l'est pas. Aucun nouveau callback n'est nécessaire dans <code>CadEditor</code>.</details>
+
+## 📌 À retenir
+
+- `CadEditor` possède `entities` et `layers` ; les composants enfants reçoivent des props et appellent des callbacks.
+- `onUpdate(Partial<CadEntity>)` transporte seulement les champs modifiés.
+- Pour un mur, `handleUpdateSelectedFields` garde la ligne de référence fixe et déplace axe et ouvertures hébergées.
+- L'inspecteur a trois onglets (géométrie, matière, position) et des blocs dédiés : ligne de référence, texte, ouvertures.
+- Masqué = ignoré partout ; verrouillé = visible mais non éditable ni accrochable.
+
+⬅️ [Chapitre précédent](./chapitre_08_encastrement_des_menuiseries.md) | [Sommaire](./README.md) | [Chapitre suivant](./chapitre_10_moteur_export_dxf_autocad_et_svg.md) ➡️
