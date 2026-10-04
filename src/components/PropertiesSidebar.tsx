@@ -469,6 +469,59 @@ export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
             </div>
             )}
 
+            {/* TEXTE / ANNOTATION */}
+            {entity.type === 'text' && (
+              <div className="bg-surface-container-low p-2 rounded border border-outline-variant/20 flex flex-col gap-2">
+                <span className="font-mono text-[9px] text-outline uppercase font-semibold">Texte</span>
+                <textarea
+                  value={entity.label || ''}
+                  onChange={(e) => onUpdate({ label: e.target.value })}
+                  rows={3}
+                  className="w-full bg-surface-container-lowest px-2 py-1 rounded border border-outline-variant/30 font-mono text-xs text-on-surface outline-none resize-y"
+                />
+                <label className="flex items-center gap-2 font-mono text-[10px] text-outline">
+                  Hauteur (px plan)
+                  <input
+                    type="number"
+                    min={4}
+                    value={entity.fontSize || 14}
+                    onChange={(e) => onUpdate({ fontSize: Math.max(4, Number(e.target.value)) })}
+                    className="w-16 bg-surface-container-lowest px-2 py-0.5 rounded border border-outline-variant/30 text-on-surface text-right outline-none"
+                  />
+                </label>
+              </div>
+            )}
+
+            {/* ATTRIBUTE 2B: LIGNE DE RÉFÉRENCE (murs & cloisons) */}
+            {['wall', 'partition'].includes(entity.type) && (
+              <div className="bg-surface-container-low p-2 rounded border border-outline-variant/20 flex flex-col gap-1">
+                <span className="font-mono text-[9px] text-outline uppercase font-semibold">
+                  Ligne de référence (sens du tracé)
+                </span>
+                <div className="grid grid-cols-3 gap-1">
+                  {([
+                    { id: 'left', label: 'Nu gauche', icon: 'align_horizontal_left' },
+                    { id: 'center', label: 'Axe', icon: 'align_horizontal_center' },
+                    { id: 'right', label: 'Nu droite', icon: 'align_horizontal_right' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.id}
+                      onClick={() => onUpdate({ refLine: opt.id })}
+                      className={`py-1 rounded font-mono text-[9px] border flex flex-col items-center gap-0.5 ${
+                        (entity.refLine || 'center') === opt.id
+                          ? 'bg-primary/20 text-primary border-primary/50 font-bold'
+                          : 'bg-surface-container text-outline border-outline-variant/20 hover:text-on-surface'
+                      }`}
+                      title="La ligne de référence reste fixe : le corps du mur se déplace de part et d'autre"
+                    >
+                      <span className="material-symbols-outlined text-[15px]">{opt.icon}</span>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* ATTRIBUTE 3: THICKNESS & HEIGHT */}
             {['wall', 'partition', 'rect'].includes(entity.type) && (
               <div className="grid grid-cols-2 gap-2">

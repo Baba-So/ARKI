@@ -15,11 +15,19 @@ export type CadTool =
   | 'circle'
   | 'arc' 
   | 'cut' 
-  | 'measure';
+  | 'measure'
+  | 'text';
 
 export type WallSubTool = 'single' | 'continuous' | 'rect';
 export type ShapeSubTool = 'rect' | 'circle';
 export type PolylineSubTool = 'straight' | 'freehand' | 'curve';
+
+export interface CadLevel {
+  id: string;
+  name: string; // ex. "RDC", "R+1"
+  elevation: number; // altitude du plancher fini en mm (RDC = 0)
+  height: number; // hauteur sous plafond / hauteur de mur par défaut en mm
+}
 
 export interface CadLayer {
   id: string;
@@ -64,7 +72,8 @@ export interface MaterialDefinition {
 export interface CadEntity {
   id: string;
   name: string;
-  type: 'wall' | 'partition' | 'door' | 'window' | 'dim' | 'room' | 'furniture' | 'rect' | 'circle' | 'line' | 'polygon' | 'polyline' | 'curve';
+  type: 'wall' | 'partition' | 'door' | 'window' | 'dim' | 'room' | 'furniture' | 'rect' | 'circle' | 'line' | 'polygon' | 'polyline' | 'curve' | 'text';
+  fontSize?: number; // hauteur de texte en px plan (type 'text')
   layerId: string;
   x1: number;
   y1: number;
@@ -75,6 +84,7 @@ export interface CadEntity {
   points?: Array<{ x: number; y: number }>; // Sommets multiples pour polygone / polyligne
   isClosed?: boolean; // Polygone fermé ou chaîne ouverte
   thickness?: number;
+  refLine?: 'left' | 'center' | 'right'; // ligne de référence du mur (relative au sens du tracé), 'center' par défaut
   height?: number;
   label?: string;
   subText?: string;
@@ -183,7 +193,7 @@ export interface CadSettings {
   precision: '0.1' | '1.0';
   wallThickness: number;
   wallHeight: number;
-  wallJustif: 'Nu Extérieur' | 'Axe' | 'Nu Intérieur';
+  wallJustif: 'Nu Gauche' | 'Axe' | 'Nu Droite'; // ligne de référence relative au sens du tracé
   wallMaterial: string;
   chaining: boolean;
   level: string;
@@ -201,4 +211,53 @@ export interface CopilotMessage {
     impact: string;
     applied: boolean;
   };
+}
+
+// ── Mise en page (planches) ────────────────────────────────────────────
+export type SheetFormat = 'A4' | 'A3' | 'A2' | 'A1' | 'A0';
+
+export type LayoutView =
+  | { type: 'plan'; levelId: string }
+  | { type: 'elevation'; dir: 'S' | 'N' | 'E' | 'O' }
+  | { type: 'section'; id: 'AA' | 'BB'; pos: number; flip: boolean };
+
+/** Cadre de vue placé sur une planche (coordonnées en mm papier). */
+export interface LayoutViewport {
+  kind: 'viewport';
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  view: LayoutView;
+  scale: number; // dénominateur : 1:scale
+  title: string;
+  showTitle: boolean;
+  frame: boolean;
+}
+
+export interface LayoutText {
+  kind: 'text';
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  fontSize: number; // mm papier
+  bold: boolean;
+  align: 'start' | 'middle' | 'end';
+}
+
+export type LayoutItem = LayoutViewport | LayoutText;
+
+export interface LayoutSheet {
+  id: string;
+  name: string;
+  format: SheetFormat;
+  landscape: boolean;
+  project: string;
+  title: string;
+  author: string;
+  sheetNo: string;
+  showFrame: boolean;
+  items: LayoutItem[];
 }

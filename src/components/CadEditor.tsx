@@ -1,9 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { CadTool, CadSettings, CadLayer, CadEntity, CadBlock, WallSubTool, ShapeSubTool, PolylineSubTool } from '../types.ts';
+import { CadTool, CadSettings, CadLayer, CadEntity, CadBlock, CadLevel, LayoutSheet, WallSubTool, ShapeSubTool, PolylineSubTool } from '../types.ts';
 import { LayerManager } from './LayerManager.tsx';
 import { PropertiesSidebar } from './PropertiesSidebar.tsx';
 import { CadLibraryPanel } from './CadLibraryPanel.tsx';
 import { ArckiCadAgent } from '../agent.ts';
+import { ViewsPanel } from './ViewsPanel.tsx';
+import { LayoutPanel, createSheet } from './LayoutPanel.tsx';
+import { LevelManager } from './LevelManager.tsx';
+import { computeWallPolygons, polyToPoints, refToCenterline, justifToRef, refSign } from '../wallGeometry.ts';
 
 interface CadEditorProps {
   onOpenNewProject: () => void;
@@ -13,8 +17,8 @@ interface CadEditorProps {
 export const CadEditor: React.FC<CadEditorProps> = ({
   onOpenExport,
 }) => {
-  // Navigation active tab in the left rail: 'plan' | '3d' | 'bim' | 'rendu' | 'config'
-  const [activeRail, setActiveRail] = useState<'plan' | '3d' | 'bim' | 'rendu' | 'config'>('plan');
+  // Navigation active tab in the left rail: 'plan' | 'views' | 'bim' | 'layout' | 'rendu' | 'config'
+  const [activeRail, setActiveRail] = useState<'plan' | 'views' | 'bim' | 'layout' | 'rendu' | 'config'>('plan');
   
   // Active CAD tool on the left toolbar
   const [activeTool, setActiveTool] = useState<CadTool>('select');
@@ -106,8 +110,8 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       name: 'Mur Porteur Nord',
       type: 'wall',
       layerId: 'structures',
-      x1: 120,
-      y1: 140,
+      x1: 140,
+      y1: 160,
       x2: 740,
       y2: 160,
       thickness: 200,
@@ -120,10 +124,10 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       name: 'Mur Porteur Ouest',
       type: 'wall',
       layerId: 'structures',
-      x1: 120,
-      y1: 160,
+      x1: 140,
+      y1: 690,
       x2: 140,
-      y2: 680,
+      y2: 160,
       thickness: 200,
       height: 2800,
       material: 'Béton banché + ITE 140mm',
@@ -134,10 +138,10 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       name: 'Mur Porteur Sud',
       type: 'wall',
       layerId: 'structures',
-      x1: 120,
-      y1: 680,
-      x2: 560,
-      y2: 700,
+      x1: 740,
+      y1: 690,
+      x2: 140,
+      y2: 690,
       thickness: 200,
       height: 2800,
       material: 'Béton banché + ITE 140mm',
@@ -148,10 +152,10 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       name: 'Mur Porteur Est',
       type: 'wall',
       layerId: 'structures',
-      x1: 720,
-      y1: 140,
+      x1: 740,
+      y1: 160,
       x2: 740,
-      y2: 340,
+      y2: 690,
       thickness: 200,
       height: 2800,
       material: 'Béton banché + ITE 140mm',
@@ -165,7 +169,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       type: 'partition',
       layerId: 'cloisons',
       x1: 140,
-      y1: 452,
+      y1: 460,
       x2: 420,
       y2: 460,
       thickness: 72,
@@ -178,10 +182,10 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       name: 'Cloison Suite / SDE',
       type: 'partition',
       layerId: 'cloisons',
-      x1: 416,
+      x1: 420,
       y1: 460,
-      x2: 424,
-      y2: 680,
+      x2: 420,
+      y2: 690,
       thickness: 72,
       height: 2800,
       material: 'Placostil 72mm',
@@ -192,9 +196,9 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       name: 'Cloison Cuisine / Couloir',
       type: 'partition',
       layerId: 'cloisons',
-      x1: 496,
+      x1: 500,
       y1: 160,
-      x2: 504,
+      x2: 500,
       y2: 340,
       thickness: 72,
       height: 2800,
@@ -214,7 +218,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       y2: 460,
       angle: 0,
       thickness: 72,
-      hostWallId: 'partition-suite-salon',
+      hostWallId: 'partition-salon-suite',
       openingWidth: 830,
       doorSwing: 'right',
       doorAngle: 90,
@@ -405,6 +409,97 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
   // Selected Entities IDs set
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // ── Niveaux (RDC, R+1, …) ─────────────────────────────────────────────
+  // `entities` contient toujours les entités du niveau ACTIF (tout le code de dessin reste inchangé) ;
+  // les autres niveaux sont rangés dans `otherLevels` et échangés lors d'un changement de niveau.
+  const [levels, setLevels] = useState<CadLevel[]>([{ id: 'lvl-rdc', name: 'RDC', elevation: 0, height: 2800 }]);
+  const [activeLevelId, setActiveLevelId] = useState('lvl-rdc');
+  const [otherLevels, setOtherLevels] = useState<Record<string, CadEntity[]>>({});
+
+  const activeLevel = levels.find(l => l.id === activeLevelId) || levels[0];
+
+  // Un outil devenu indisponible dans l'onglet courant retombe sur la sélection
+  useEffect(() => {
+    const allowed = activeRail === 'plan' ? null : activeRail === 'layout' ? ['select', 'text'] : ['select'];
+    if (allowed && !allowed.includes(activeTool)) {
+      setActiveTool('select');
+      setDraftStart(null);
+    }
+  }, [activeRail]);
+
+  // ── Mise en page : planches (conservées en changeant d'onglet) ──
+  const [sheets, setSheets] = useState<LayoutSheet[]>(() => [createSheet('Plan RDC', 'lvl-rdc', 50)]);
+  const [activeSheetId, setActiveSheetId] = useState(() => sheets[0].id);
+  const entitiesByLevel: Record<string, CadEntity[]> = { ...otherLevels, [activeLevelId]: entities };
+  const entityCounts = Object.fromEntries(Object.entries(entitiesByLevel).map(([k, v]) => [k, v.length]));
+  // Niveau situé juste en dessous : affiché en fond estompé pour le calage des murs
+  const belowLevel = [...levels]
+    .filter(l => l.elevation < activeLevel.elevation)
+    .sort((a, b) => b.elevation - a.elevation)[0];
+  const ghostEntities = belowLevel ? (entitiesByLevel[belowLevel.id] || []).filter(e => e.type === 'wall' || e.type === 'partition') : [];
+
+  const gotoLevel = (id: string, data: Record<string, CadEntity[]>, lvls: CadLevel[]) => {
+    const { [id]: target = [], ...rest } = data;
+    setOtherLevels(rest);
+    setEntities(target);
+    setActiveLevelId(id);
+    setSelectedIds([]);
+    setHistoryStack([]);
+    setRedoStack([]);
+    const lv = lvls.find(l => l.id === id);
+    if (lv) setWallHeight(lv.height);
+  };
+  const handleSelectLevel = (id: string) => {
+    if (id === activeLevelId) return;
+    gotoLevel(id, entitiesByLevel, levels);
+  };
+  const addLevel = (where: 'above' | 'below') => {
+    const top = Math.max(...levels.map(l => l.elevation + l.height));
+    const bottom = Math.min(...levels.map(l => l.elevation));
+    const height = activeLevel.height;
+    const nl: CadLevel =
+      where === 'above'
+        ? { id: `lvl-${Date.now()}`, name: `R+${levels.filter(l => l.elevation > 0).length + 1}`, elevation: top + 200, height }
+        : { id: `lvl-${Date.now()}`, name: `SS-${levels.filter(l => l.elevation < 0).length + 1}`, elevation: bottom - height - 200, height };
+    const next = [...levels, nl];
+    setLevels(next);
+    gotoLevel(nl.id, { ...entitiesByLevel, [nl.id]: [] }, next);
+  };
+  const duplicateLevel = (id: string) => {
+    const src = levels.find(l => l.id === id);
+    if (!src) return;
+    const top = Math.max(...levels.map(l => l.elevation + l.height));
+    const nl: CadLevel = { id: `lvl-${Date.now()}`, name: `R+${levels.filter(l => l.elevation > 0).length + 1}`, elevation: top + 200, height: src.height };
+    const suffix = `-${nl.id.slice(-4)}`;
+    const copy = (entitiesByLevel[id] || []).map(e => ({
+      ...e,
+      id: `${e.id}${suffix}`,
+      hostWallId: e.hostWallId ? `${e.hostWallId}${suffix}` : e.hostWallId,
+    }));
+    const next = [...levels, nl];
+    setLevels(next);
+    gotoLevel(nl.id, { ...entitiesByLevel, [nl.id]: copy }, next);
+  };
+  const updateLevel = (id: string, patch: Partial<CadLevel>) => {
+    setLevels(prev => prev.map(l => (l.id === id ? { ...l, ...patch } : l)));
+    if (id === activeLevelId && patch.height) setWallHeight(patch.height);
+  };
+  const deleteLevel = (id: string) => {
+    if (levels.length <= 1) return;
+    const next = levels.filter(l => l.id !== id);
+    setLevels(next);
+    const data = { ...entitiesByLevel };
+    delete data[id];
+    if (id === activeLevelId) {
+      const fallback = [...next].sort((a, b) => a.elevation - b.elevation)[0];
+      gotoLevel(fallback.id, data, next);
+    } else {
+      const { [activeLevelId]: _cur, ...rest } = data;
+      void _cur;
+      setOtherLevels(rest);
+    }
+  };
 
   // Undo history stack
   const [historyStack, setHistoryStack] = useState<CadEntity[][]>([]);
@@ -623,9 +718,15 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   // Wall & Partition parametric settings in sub-toolbar
   const [wallType, setWallType] = useState('Mur Porteur Extérieur');
   const [wallThickness, setWallThickness] = useState(200);
+  // Ligne de référence → axe réel : décale (x1,y1,x2,y2) selon la justification active
+  const placeWall = (x1: number, y1: number, x2: number, y2: number, thicknessMm: number) => {
+    const ref = justifToRef(wallJustif);
+    const c = refToCenterline(x1, y1, x2, y2, thicknessMm, ref);
+    return { ...c, refLine: ref };
+  };
   const [wallHeight, setWallHeight] = useState(2800);
   const [wallLength, setWallLength] = useState(4250);
-  const [wallJustif, setWallJustif] = useState<'Nu Extérieur' | 'Axe' | 'Nu Intérieur'>('Nu Extérieur');
+  const [wallJustif, setWallJustif] = useState<'Nu Gauche' | 'Axe' | 'Nu Droite'>('Axe');
   const [chaining, setChaining] = useState(true);
 
   // Partition (Cloisons) dedicated settings
@@ -862,7 +963,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     precision: '0.1',
     wallThickness: 200,
     wallHeight: 2800,
-    wallJustif: 'Nu Extérieur',
+    wallJustif: 'Axe',
     wallMaterial: 'Béton banché + ITE 140mm',
     chaining: true,
     level: 'RDC (+0.00m)',
@@ -1114,6 +1215,12 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     for (const ent of entities) {
       const l = getLayer(ent.layerId);
       if (!l.visible || l.locked) continue;
+      if (ent.type === 'text') {
+        const lines = (ent.label || '').split('\n');
+        const fs = ent.fontSize || 14;
+        const tw = Math.max(...lines.map(l => l.length), 1) * fs * 0.6;
+        if (px >= ent.x1 - pickboxTolerance && px <= ent.x1 + tw + pickboxTolerance && py >= ent.y1 - fs - pickboxTolerance && py <= ent.y1 + (lines.length - 1) * fs * 1.2 + pickboxTolerance) return ent;
+      }
       if (ent.type === 'furniture' || ent.type === 'rect') {
         const minX = Math.min(ent.x1, ent.x2) - pickboxTolerance;
         const maxX = Math.max(ent.x1, ent.x2) + pickboxTolerance;
@@ -1806,6 +1913,39 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       return; // Déjà géré précisément au centre du curseur dans handleCanvasMouseDown
     }
 
+    // 0. TEXTE / ANNOTATION (T)
+    if (activeTool === 'text') {
+      const l = getLayer('cotations');
+      if (l.locked) {
+        alert("Le calque Cotations est verrouillé. Déverrouillez-le pour ajouter un texte.");
+        return;
+      }
+      const content = window.prompt('Texte à insérer sur le plan :', 'Texte');
+      if (content === null || content.trim() === '') return;
+      const fs = 14;
+      const lines = content.split('\n');
+      const newText: CadEntity = {
+        id: `text-${Date.now()}`,
+        name: `Texte « ${content.slice(0, 24)} »`,
+        type: 'text',
+        layerId: 'cotations',
+        x1: cursorPos.x,
+        y1: cursorPos.y,
+        x2: cursorPos.x + Math.max(...lines.map(s2 => s2.length), 1) * fs * 0.6,
+        y2: cursorPos.y + lines.length * fs * 1.2,
+        label: content,
+        fontSize: fs,
+      };
+      recordHistory();
+      setEntities(prev => [...prev, newText]);
+      setSelectedIds([newText.id]);
+      setActiveTool('select');
+      if (autoOpenPropsOnSelect) {
+        setRightDockTab('props');
+      }
+      return;
+    }
+
     // 1. WALL CREATION (W) - Mur Droit, Mur Continu, 4 Murs Rectangle
     if (activeTool === 'wall') {
       const l = getLayer('structures');
@@ -1838,7 +1978,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             name: `Mur Extérieur Nord L=${wMm}mm`,
             type: 'wall',
             layerId: 'structures',
-            x1: minX, y1: minY, x2: maxX, y2: minY,
+            ...placeWall(minX, minY, maxX, minY, wallThickness),
             thickness: wallThickness, height: wallHeight,
             material: 'Béton banché + ITE 140mm', materialIndex: 'MAT-01',
           };
@@ -1847,7 +1987,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             name: `Mur Extérieur Est L=${hMm}mm`,
             type: 'wall',
             layerId: 'structures',
-            x1: maxX, y1: minY, x2: maxX, y2: maxY,
+            ...placeWall(maxX, minY, maxX, maxY, wallThickness),
             thickness: wallThickness, height: wallHeight,
             material: 'Béton banché + ITE 140mm', materialIndex: 'MAT-01',
           };
@@ -1856,7 +1996,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             name: `Mur Extérieur Sud L=${wMm}mm`,
             type: 'wall',
             layerId: 'structures',
-            x1: maxX, y1: maxY, x2: minX, y2: maxY,
+            ...placeWall(maxX, maxY, minX, maxY, wallThickness),
             thickness: wallThickness, height: wallHeight,
             material: 'Béton banché + ITE 140mm', materialIndex: 'MAT-01',
           };
@@ -1865,7 +2005,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             name: `Mur Extérieur Ouest L=${hMm}mm`,
             type: 'wall',
             layerId: 'structures',
-            x1: minX, y1: maxY, x2: minX, y2: minY,
+            ...placeWall(minX, maxY, minX, minY, wallThickness),
             thickness: wallThickness, height: wallHeight,
             material: 'Béton banché + ITE 140mm', materialIndex: 'MAT-01',
           };
@@ -1898,10 +2038,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             name: `Mur Extérieur L=${lengthMm}mm`,
             type: 'wall',
             layerId: 'structures',
-            x1: draftStart.x,
-            y1: draftStart.y,
-            x2: cursorPos.x,
-            y2: cursorPos.y,
+            ...placeWall(draftStart.x, draftStart.y, cursorPos.x, cursorPos.y, wallThickness),
             thickness: wallThickness,
             height: wallHeight,
             material: 'Béton banché + ITE 140mm',
@@ -1960,28 +2097,28 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           const pTop: CadEntity = {
             id: `part-top-${now}`, name: `Cloison Nord L=${wMm}mm`,
             type: 'partition', layerId: 'cloisons',
-            x1: minX, y1: minY, x2: maxX, y2: minY,
+            ...placeWall(minX, minY, maxX, minY, partitionThickness),
             thickness: partitionThickness, height: wallHeight,
             material: partitionType, materialIndex: 'MAT-02',
           };
           const pRight: CadEntity = {
             id: `part-right-${now}`, name: `Cloison Est L=${hMm}mm`,
             type: 'partition', layerId: 'cloisons',
-            x1: maxX, y1: minY, x2: maxX, y2: maxY,
+            ...placeWall(maxX, minY, maxX, maxY, partitionThickness),
             thickness: partitionThickness, height: wallHeight,
             material: partitionType, materialIndex: 'MAT-02',
           };
           const pBottom: CadEntity = {
             id: `part-bottom-${now}`, name: `Cloison Sud L=${wMm}mm`,
             type: 'partition', layerId: 'cloisons',
-            x1: maxX, y1: maxY, x2: minX, y2: maxY,
+            ...placeWall(maxX, maxY, minX, maxY, partitionThickness),
             thickness: partitionThickness, height: wallHeight,
             material: partitionType, materialIndex: 'MAT-02',
           };
           const pLeft: CadEntity = {
             id: `part-left-${now}`, name: `Cloison Ouest L=${hMm}mm`,
             type: 'partition', layerId: 'cloisons',
-            x1: minX, y1: maxY, x2: minX, y2: minY,
+            ...placeWall(minX, maxY, minX, minY, partitionThickness),
             thickness: partitionThickness, height: wallHeight,
             material: partitionType, materialIndex: 'MAT-02',
           };
@@ -2013,10 +2150,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             name: `Cloison ${partitionType} L=${lengthMm}mm`,
             type: 'partition',
             layerId: 'cloisons',
-            x1: draftStart.x,
-            y1: draftStart.y,
-            x2: cursorPos.x,
-            y2: cursorPos.y,
+            ...placeWall(draftStart.x, draftStart.y, cursorPos.x, cursorPos.y, partitionThickness),
             thickness: partitionThickness,
             height: wallHeight,
             material: partitionType,
@@ -2480,7 +2614,15 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   // Keyboard Shortcuts listener (Delete, Escape, Ctrl+Z, Ctrl+D, Tool shortcuts, Space Pan, Zoom keys)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) {
+        return;
+      }
+
+      // Hors onglet Plan (Vues, Mise en page) : les outils de dessin sont inactifs ; seuls V et T restent actifs
+      if (activeRail !== 'plan') {
+        const k = e.key.toLowerCase();
+        if (k === 'v' && !e.ctrlKey && !e.metaKey) setActiveTool('select');
+        else if (k === 't' && activeRail === 'layout') setActiveTool('text');
         return;
       }
 
@@ -2663,6 +2805,10 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           setMeasureStart(null);
           setDraftStart(null);
           break;
+        case 't':
+          setActiveTool('text');
+          setDraftStart(null);
+          break;
         case 'g':
           e.preventDefault();
           setSettings(s => ({ ...s, snap: !s.snapToGrid, snapToGrid: !s.snapToGrid }));
@@ -2709,7 +2855,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [selectedIds, entities, historyStack, redoStack, draftStart, measureStart, measureResult, isBoxSelecting, activeTool, polyPoints, activeGrip, isDraggingEntities, dragInitialEntities]);
+  }, [selectedIds, entities, historyStack, redoStack, draftStart, measureStart, measureResult, isBoxSelecting, activeTool, polyPoints, activeGrip, isDraggingEntities, dragInitialEntities, activeRail]);
 
   // Handle CLI Submit
   const handleCliSubmit = (e: React.FormEvent) => {
@@ -2885,6 +3031,27 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   const handleUpdateSelectedFields = (updatedFields: Partial<CadEntity>) => {
     if (!primarySelectedEntity) return;
     recordHistory();
+    const w = primarySelectedEntity;
+    const isWallLike = w.type === 'wall' || w.type === 'partition';
+    if (isWallLike && (updatedFields.refLine !== undefined || updatedFields.thickness !== undefined)) {
+      // La ligne de référence reste fixe dans le plan : l'axe (et les ouvertures encastrées) se décalent
+      const oldT = (w.thickness || (w.type === 'partition' ? 72 : 200)) / 10;
+      const newT = (updatedFields.thickness ?? w.thickness ?? (w.type === 'partition' ? 72 : 200)) / 10;
+      const delta = (refSign(updatedFields.refLine ?? w.refLine) * newT) / 2 - (refSign(w.refLine) * oldT) / 2;
+      const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) || 1;
+      const dx = (-(w.y2 - w.y1) / len) * delta;
+      const dy = ((w.x2 - w.x1) / len) * delta;
+      setEntities(prev =>
+        prev.map(e => {
+          if (e.id === w.id) return { ...e, ...updatedFields, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy };
+          if (e.hostWallId === w.id) {
+            return { ...e, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, ...(updatedFields.thickness ? { thickness: updatedFields.thickness } : {}) };
+          }
+          return e;
+        })
+      );
+      return;
+    }
     setEntities(prev => prev.map(e => e.id === primarySelectedEntity.id ? { ...e, ...updatedFields } : e));
   };
 
@@ -3493,13 +3660,17 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
               {/* Justification Selector */}
               <div className="hidden md:flex items-center gap-1 bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant/20 text-xs">
-                <span className="font-mono text-[10px] text-outline">JUSTIF:</span>
+                <span className="font-mono text-[10px] text-outline">LIGNE RÉF.:</span>
                 <button
                   onClick={() => {
-                    setWallJustif(prev => prev === 'Nu Extérieur' ? 'Axe' : prev === 'Axe' ? 'Nu Intérieur' : 'Nu Extérieur');
+                    setWallJustif(prev => prev === 'Nu Gauche' ? 'Axe' : prev === 'Axe' ? 'Nu Droite' : 'Nu Gauche');
                   }}
                   className="flex items-center gap-1 text-on-surface hover:text-primary transition-colors"
+                  title="Ligne de référence du tracé : le corps du mur se place à droite (Nu Gauche), centré (Axe) ou à gauche (Nu Droite) des points cliqués. Un rectangle tracé dans le sens horaire : Nu Gauche = faces extérieures sur le trait."
                 >
+                  <span className="material-symbols-outlined text-[14px]">
+                    {wallJustif === 'Nu Gauche' ? 'align_horizontal_left' : wallJustif === 'Nu Droite' ? 'align_horizontal_right' : 'align_horizontal_center'}
+                  </span>
                   <span>{wallJustif}</span>
                 </button>
               </div>
@@ -3538,21 +3709,28 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
         {/* View Controls & Proj HUD */}
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant/20">
-            <span className="font-mono text-[10px] text-outline">NIVEAU:</span>
-            <span className="font-mono text-[11px] text-primary font-semibold">RDC (+0.00m)</span>
-          </div>
+          <LevelManager
+            levels={levels}
+            activeLevelId={activeLevelId}
+            entityCounts={entityCounts}
+            onSelect={handleSelectLevel}
+            onAddAbove={() => addLevel('above')}
+            onAddBelow={() => addLevel('below')}
+            onDuplicate={duplicateLevel}
+            onUpdate={updateLevel}
+            onDelete={deleteLevel}
+          />
           <button
-            onClick={() => setActiveRail(activeRail === '3d' ? 'plan' : '3d')}
+            onClick={() => setActiveRail(activeRail === 'views' ? 'plan' : 'views')}
             className={`flex items-center gap-1 px-2 py-0.5 rounded border border-outline-variant/20 text-[11px] font-mono transition-colors ${
-              activeRail === '3d' ? 'bg-secondary/20 text-secondary font-bold' : 'bg-surface-container-low text-secondary'
+              activeRail === 'views' ? 'bg-secondary/20 text-secondary font-bold' : 'bg-surface-container-low text-secondary'
             }`}
-            title="Basculer entre Projection 2D et Rendu 3D Isométrique"
+            title="Basculer entre le Plan 2D et les Vues (façades & coupes)"
           >
             <span className="material-symbols-outlined text-[13px]">
-              {activeRail === '3d' ? 'view_in_ar' : 'layers'}
+              {activeRail === 'views' ? 'view_quilt' : 'layers'}
             </span>
-            <span>{activeRail === '3d' ? 'ISOMÉTRIQUE 3D' : 'ORTHOGONAL 2D'}</span>
+            <span>{activeRail === 'views' ? 'FAÇADES & COUPES' : 'PLAN 2D'}</span>
           </button>
           <button
             onClick={() => {
@@ -3583,14 +3761,14 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               <span className="font-mono text-[9px] mt-0.5">Plan</span>
             </button>
             <button
-              onClick={() => setActiveRail('3d')}
+              onClick={() => setActiveRail('views')}
               className={`flex flex-col items-center justify-center py-2 px-1 rounded transition-colors ${
-                activeRail === '3d' ? 'bg-surface-container-high text-secondary font-semibold' : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
+                activeRail === 'views' ? 'bg-surface-container-high text-secondary font-semibold' : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
               }`}
-              title="Modèle Isométrique 3D"
+              title="Vues : façades et coupes"
             >
-              <span className="material-symbols-outlined text-[19px]">view_in_ar</span>
-              <span className="font-mono text-[9px] mt-0.5">3D</span>
+              <span className="material-symbols-outlined text-[19px]">view_quilt</span>
+              <span className="font-mono text-[9px] mt-0.5">Vues</span>
             </button>
             <button
               onClick={() => {
@@ -3609,6 +3787,16 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               {isSidebarLayersOpen && (
                 <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
               )}
+            </button>
+            <button
+              onClick={() => setActiveRail(activeRail === 'layout' ? 'plan' : 'layout')}
+              className={`flex flex-col items-center justify-center py-2 px-1 rounded transition-colors ${
+                activeRail === 'layout' ? 'bg-surface-container-high text-secondary font-semibold' : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
+              }`}
+              title="Mise en page : planche, échelle et cartouche"
+            >
+              <span className="material-symbols-outlined text-[19px]">grid_view</span>
+              <span className="font-mono text-[9px] mt-0.5">Mise en page</span>
             </button>
             <button
               onClick={onOpenExport}
@@ -3682,9 +3870,14 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             { id: 'dim', icon: 'straighten', key: 'D', title: 'Cotation Automatique (D / _DIM)' },
             { id: 'hatch', icon: 'texture', key: 'H', title: 'Hachures Paramétriques (H / _HATCH)' },
             { id: 'measure', icon: 'square_foot', key: 'M', title: 'Mesure de distance en temps réel (M / _DIST)' },
-          ].map((t) => (
+            { id: 'text', icon: 'title', key: 'T', title: activeRail === 'layout' ? 'Texte sur la planche (T) : cliquez sur la planche' : 'Texte / annotation sur le plan (T)' },
+          ].map((t) => {
+            // Outils disponibles selon l'onglet : Plan = tous ; Vues = sélection ; Mise en page = sélection + texte
+            const enabled = activeRail === 'plan' || (activeRail === 'layout' ? ['select', 'text'] : ['select']).includes(t.id);
+            return (
             <div key={t.id} className="relative group">
               <button
+                disabled={!enabled}
                 onClick={() => {
                   setActiveTool(t.id as CadTool);
                   setDraftStart(null);
@@ -3698,11 +3891,13 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   }
                 }}
                 className={`relative w-8 h-8 rounded flex items-center justify-center transition-colors ${
-                  activeTool === t.id
+                  !enabled
+                    ? 'text-on-surface-variant/25 cursor-not-allowed'
+                    : activeTool === t.id
                     ? 'bg-surface-container-high text-primary shadow-sm'
                     : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high'
                 }`}
-                title={t.title}
+                title={enabled ? t.title : `${t.title} — indisponible dans cet onglet`}
               >
                 <span className="material-symbols-outlined text-[18px]" style={{ fontVariationSettings: activeTool === t.id ? "'FILL' 1" : "'FILL' 0" }}>
                   {t.icon}
@@ -3730,7 +3925,8 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                 )}
               </button>
             </div>
-          ))}
+            );
+          })}
 
           {/* Subtools Flyout Menu */}
           {activeFlyout && (
@@ -3864,7 +4060,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           {/* Quick Undo / Redo in toolstrip */}
           <button
             onClick={handleUndo}
-            disabled={historyStack.length === 0}
+            disabled={historyStack.length === 0 || activeRail !== 'plan'}
             className="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high disabled:opacity-30 transition-colors"
             title="Annuler dernière action (Ctrl+Z)"
           >
@@ -3872,7 +4068,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           </button>
           <button
             onClick={handleRedo}
-            disabled={redoStack.length === 0}
+            disabled={redoStack.length === 0 || activeRail !== 'plan'}
             className="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high disabled:opacity-30 transition-colors"
             title="Rétablir (Ctrl+Y)"
           >
@@ -3935,44 +4131,29 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             isPanning ? 'cursor-grabbing' : (isSpaceHeld || activeTool === 'pan') ? 'cursor-grab' : 'cursor-none'
           }`}
         >
-          {activeRail === '3d' ? (
-            /* 3D Wireframe / Isometric Model View */
-            <div className="absolute inset-0 flex items-center justify-center overflow-hidden p-6 select-none bg-radial from-[#0d2238] to-[#030a12]">
-              <div className="relative w-full max-w-4xl h-full flex flex-col items-center justify-center">
-                <div className="absolute top-4 left-4 z-20 bg-surface-container-lowest/90 px-3 py-1.5 rounded border border-primary/30 flex items-center gap-2">
-                  <span className="material-symbols-outlined text-primary text-[18px]">view_in_ar</span>
-                  <span className="font-mono text-xs text-primary font-bold">VUE 3D ISOMÉTRIQUE TEMPS RÉEL</span>
-                </div>
-
-                <svg viewBox="0 0 800 500" className="w-full h-full drop-shadow-2xl">
-                  {/* Foundation Slab */}
-                  <polygon points="200,320 600,220 680,260 280,360" fill="#0a1d30" stroke="#4cd7f6" strokeWidth="1.5" />
-                  <polygon points="200,320 280,360 280,375 200,335" fill="#051424" stroke="#4cd7f6" strokeWidth="1" />
-                  <polygon points="280,360 680,260 680,275 280,375" fill="#030b14" stroke="#4cd7f6" strokeWidth="1" />
-
-                  {/* Dynamic 3D extrusion of walls from reactive entities */}
-                  {entities.filter(e => e.type === 'wall' && getLayer(e.layerId).visible).map((ent) => (
-                    <polygon
-                      key={ent.id}
-                      points={`${ent.x1 * 0.5 + 140},${ent.y1 * 0.4 + 200} ${ent.x2 * 0.5 + 140},${ent.y2 * 0.4 + 200} ${ent.x2 * 0.5 + 140},${ent.y2 * 0.4 + 130} ${ent.x1 * 0.5 + 140},${ent.y1 * 0.4 + 130}`}
-                      fill="#0d2438"
-                      stroke={selectedIds.includes(ent.id) ? '#ffb95f' : getLayer(ent.layerId).color}
-                      strokeWidth={selectedIds.includes(ent.id) ? '2.5' : '1.5'}
-                    />
-                  ))}
-                </svg>
-
-                <div className="absolute bottom-6 flex items-center gap-3">
-                  <button
-                    onClick={() => setActiveRail('plan')}
-                    className="px-4 py-2 bg-primary-container hover:bg-primary text-on-primary-container rounded shadow-lg font-mono text-xs font-semibold flex items-center gap-2 transition-all active:scale-95"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">arrow_back</span>
-                    <span>Revenir au Plan 2D d'exécution</span>
-                  </button>
-                </div>
-              </div>
-            </div>
+          {activeRail === 'layout' ? (
+            <LayoutPanel
+              levels={levels}
+              entitiesByLevel={entitiesByLevel}
+              isLayerVisible={(id) => getLayer(id).visible}
+              activeLevelId={activeLevelId}
+              sheets={sheets}
+              setSheets={setSheets}
+              activeSheetId={activeSheetId}
+              setActiveSheetId={setActiveSheetId}
+              activeTool={activeTool}
+              setActiveTool={setActiveTool}
+              onBackToPlan={() => setActiveRail('plan')}
+            />
+          ) : activeRail === 'views' ? (
+            <ViewsPanel
+              levels={levels}
+              entitiesByLevel={entitiesByLevel}
+              activeLevelId={activeLevelId}
+              isLayerVisible={(id) => getLayer(id).visible}
+              selectedIds={selectedIds}
+              onBackToPlan={() => setActiveRail('plan')}
+            />
           ) : (
             /* 2D Plan Viewport (Vector Canvas with Dynamic Entities) */
             <div 
@@ -4067,6 +4248,21 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     <circle cx="12" cy="11" r="0.6" fill="#94a3b8" fillOpacity="0.55" />
                   </pattern>
                 </defs>
+
+                {/* 0. NIVEAU INFÉRIEUR EN FOND ESTOMPÉ (calage des murs de l'étage) */}
+                {ghostEntities.length > 0 && (
+                  <g className="pointer-events-none" opacity={0.22}>
+                    {ghostEntities.map(g => (
+                      <line
+                        key={`ghost-${g.id}`}
+                        x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2}
+                        stroke="#94a3b8"
+                        strokeWidth={Math.max((g.thickness || 100) / 10, 2)}
+                        strokeLinecap="butt"
+                      />
+                    ))}
+                  </g>
+                )}
 
                 {/* 1. ROOMS (Background fills & labels & parametric hatch patterns) */}
                 {entities.filter(e => e.type === 'room').map(ent => {
@@ -4206,115 +4402,144 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   );
                 })}
 
-                {/* 3. WALLS & PARTITIONS (avec découpes maçonnerie automatiques pour les ouvertures) */}
-                {entities.filter(e => ['wall', 'partition'].includes(e.type)).map(ent => {
+                {/* 3. WALLS & PARTITIONS — raccords calculés (onglets / tés) ; contours puis remplissages
+                    pour que les murs raccordés forment une seule maçonnerie continue */}
+                {(() => {
+                  const visWalls = entities.filter(e => ['wall', 'partition'].includes(e.type) && getLayer(e.layerId).visible);
+                  const polys = computeWallPolygons(visWalls);
+
+                  const renderGroup = (kind: 'wall' | 'partition') => {
+                    const group = visWalls.filter(e => e.type === kind);
+                    if (!group.length) return null;
+                    const info = group.map(ent => {
+                      const l = getLayer(ent.layerId);
+                      const isSelected = selectedIds.includes(ent.id);
+                      const isHovered = hoveredEntityId === ent.id && !isSelected;
+                      const strokeColor = isSelected ? '#ffb95f' : isHovered ? '#38bdf8' : ent.color || l.color;
+                      const sw = isSelected ? 2.5 : isHovered ? 2.5 : kind === 'wall' ? 2 : 1.5;
+                      const openings = getOpeningsForWall(ent);
+                      return { ent, l, isSelected, isHovered, strokeColor, sw, openings, thick: ent.thickness ? ent.thickness / 10 : 8, maskId: `mask-wall-${ent.id}` };
+                    });
+                    return (
+                      <React.Fragment key={`wall-group-${kind}`}>
+                        {/* Masques de découpe de maçonnerie pour portes & fenêtres */}
+                        <defs>
+                          {info.filter(i => i.openings.length > 0).map(i => (
+                            <mask key={i.maskId} id={i.maskId} maskUnits="userSpaceOnUse">
+                              <rect x={-5000} y={-5000} width={10000} height={10000} fill="white" />
+                              {i.openings.map(op => {
+                                const opMidX = (op.x1 + op.x2) / 2;
+                                const opMidY = (op.y1 + op.y2) / 2;
+                                const opLen = Math.hypot(op.x2 - op.x1, op.y2 - op.y1) || (op.openingWidth ? op.openingWidth / 10 : 83);
+                                const opAngleDeg = (Math.atan2(op.y2 - op.y1, op.x2 - op.x1) * 180) / Math.PI;
+                                const cutThick = Math.max(i.thick * 1.6, 36);
+                                return (
+                                  <g key={`cut-${op.id}`} transform={`translate(${opMidX}, ${opMidY}) rotate(${opAngleDeg})`}>
+                                    <rect x={-opLen / 2} y={-cutThick / 2} width={opLen} height={cutThick} fill="black" />
+                                  </g>
+                                );
+                              })}
+                            </mask>
+                          ))}
+                        </defs>
+
+                        {/* Passe 1 : contours (demi-épaisseur extérieure visible) */}
+                        <g className="pointer-events-none">
+                          {info.map(i => polys[i.ent.id] && (
+                            <polygon
+                              key={`o-${i.ent.id}`}
+                              points={polyToPoints(polys[i.ent.id])}
+                              fill="none"
+                              stroke={i.strokeColor}
+                              strokeWidth={i.sw * 2}
+                              strokeLinejoin="miter"
+                              opacity={i.l.locked ? 0.6 : 1}
+                              mask={i.openings.length > 0 ? `url(#${i.maskId})` : undefined}
+                            />
+                          ))}
+                        </g>
+
+                        {/* Passe 2 : remplissages (masquent les contours intérieurs aux raccords) */}
+                        {info.map(i => polys[i.ent.id] && (
+                          <g
+                            key={`f-${i.ent.id}`}
+                            data-entity-id={i.ent.id}
+                            onClick={(e) => handleEntityClick(e, i.ent)}
+                            className="cursor-pointer"
+                            opacity={i.l.locked ? 0.6 : 1}
+                            mask={i.openings.length > 0 ? `url(#${i.maskId})` : undefined}
+                          >
+                            <polygon
+                              points={polyToPoints(polys[i.ent.id])}
+                              fill={kind === 'wall' ? 'url(#wall-concrete-hatch)' : '#273647'}
+                              stroke="none"
+                            />
+                          </g>
+                        ))}
+
+                        {/* Tableaux de maçonnerie aux deux extrémités de chaque ouverture + poignées de sélection */}
+                        {info.map(i => (
+                          <g key={`x-${i.ent.id}`} className="pointer-events-none">
+                            {i.openings.map(op => {
+                              const opAngleRad = Math.atan2(op.y2 - op.y1, op.x2 - op.x1);
+                              const halfThick = i.thick / 2;
+                              const perpX = -Math.sin(opAngleRad) * halfThick;
+                              const perpY = Math.cos(opAngleRad) * halfThick;
+                              return (
+                                <g key={`jambs-${op.id}`}>
+                                  <line x1={op.x1 - perpX} y1={op.y1 - perpY} x2={op.x1 + perpX} y2={op.y1 + perpY} stroke={i.strokeColor} strokeWidth={i.sw} />
+                                  <line x1={op.x2 - perpX} y1={op.y2 - perpY} x2={op.x2 + perpX} y2={op.y2 + perpY} stroke={i.strokeColor} strokeWidth={i.sw} />
+                                </g>
+                              );
+                            })}
+                            {i.isSelected && (
+                              <>
+                                <line x1={i.ent.x1} y1={i.ent.y1} x2={i.ent.x2} y2={i.ent.y2} stroke="#ffb95f" strokeWidth="0.8" strokeDasharray="6 3 1 3" opacity="0.8" />
+                                <rect x={i.ent.x1 - 3.5} y={i.ent.y1 - 3.5} width="7" height="7" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
+                                <rect x={i.ent.x2 - 3.5} y={i.ent.y2 - 3.5} width="7" height="7" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
+                                <rect x={(i.ent.x1 + i.ent.x2) / 2 - 3.5} y={(i.ent.y1 + i.ent.y2) / 2 - 3.5} width="7" height="7" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
+                              </>
+                            )}
+                          </g>
+                        ))}
+                      </React.Fragment>
+                    );
+                  };
+
+                  return (
+                    <>
+                      {renderGroup('wall')}
+                      {renderGroup('partition')}
+                    </>
+                  );
+                })()}
+
+                {/* 3A. TEXTES / ANNOTATIONS */}
+                {entities.filter(e => e.type === 'text').map(ent => {
                   const l = getLayer(ent.layerId);
                   if (!l.visible) return null;
                   const isSelected = selectedIds.includes(ent.id);
                   const isHovered = hoveredEntityId === ent.id && !isSelected;
-                  const strokeColor = isSelected ? '#ffb95f' : isHovered ? '#38bdf8' : ent.color || l.color;
-                  const thick = ent.thickness ? (ent.thickness / 10) : 8;
-                  const len = Math.hypot(ent.x2 - ent.x1, ent.y2 - ent.y1);
-                  const angleRad = Math.atan2(ent.y2 - ent.y1, ent.x2 - ent.x1);
-                  const angleDeg = (angleRad * 180) / Math.PI;
-                  const isOrtho = Math.abs(ent.x2 - ent.x1) < 2 || Math.abs(ent.y2 - ent.y1) < 2;
-
-                  // Ouvertures encastrées sur ce mur
-                  const openings = getOpeningsForWall(ent);
-                  const maskId = `mask-wall-${ent.id}`;
-
+                  const fs = ent.fontSize || 14;
+                  const lines = (ent.label || '').split('\n');
+                  const tw = Math.max(...lines.map(s2 => s2.length), 1) * fs * 0.6;
                   return (
-                    <React.Fragment key={ent.id}>
-                      {/* Masque SVG de découpe de maçonnerie pour portes & fenêtres */}
-                      {openings.length > 0 && (
-                        <defs>
-                          <mask id={maskId} maskUnits="userSpaceOnUse">
-                            <rect x={-5000} y={-5000} width={10000} height={10000} fill="white" />
-                            {openings.map(op => {
-                              const opMidX = (op.x1 + op.x2) / 2;
-                              const opMidY = (op.y1 + op.y2) / 2;
-                              const opLen = Math.hypot(op.x2 - op.x1, op.y2 - op.y1) || (op.openingWidth ? op.openingWidth / 10 : 83);
-                              const opAngleDeg = (Math.atan2(op.y2 - op.y1, op.x2 - op.x1) * 180) / Math.PI;
-                              const cutThick = Math.max(thick * 1.6, 36);
-                              return (
-                                <g key={`cut-${op.id}`} transform={`translate(${opMidX}, ${opMidY}) rotate(${opAngleDeg})`}>
-                                  <rect x={-opLen / 2} y={-cutThick / 2} width={opLen} height={cutThick} fill="black" />
-                                </g>
-                              );
-                            })}
-                          </mask>
-                        </defs>
+                    <g
+                      key={ent.id}
+                      data-entity-id={ent.id}
+                      onClick={(e) => handleEntityClick(e, ent)}
+                      className="cursor-pointer"
+                      opacity={l.locked ? 0.6 : 1}
+                    >
+                      {(isSelected || isHovered) && (
+                        <rect x={ent.x1 - 3} y={ent.y1 - fs - 2} width={tw + 6} height={lines.length * fs * 1.2 + 4} fill="none" stroke={isSelected ? '#ffb95f' : '#38bdf8'} strokeWidth={1} strokeDasharray="4 2" />
                       )}
-
-                      <g 
-                        data-entity-id={ent.id} 
-                        onClick={(e) => handleEntityClick(e, ent)}
-                        className="cursor-pointer"
-                        opacity={l.locked ? 0.6 : 1}
-                        mask={openings.length > 0 ? `url(#${maskId})` : undefined}
-                      >
-                        {isOrtho ? (
-                          <rect
-                            x={Math.min(ent.x1, ent.x2)}
-                            y={Math.min(ent.y1, ent.y2)}
-                            width={Math.max(thick, Math.abs(ent.x2 - ent.x1))}
-                            height={Math.max(thick, Math.abs(ent.y2 - ent.y1))}
-                            fill={ent.type === 'wall' ? 'url(#wall-concrete-hatch)' : '#273647'}
-                            stroke={strokeColor}
-                            strokeWidth={isSelected ? 2.5 : isHovered ? 2.5 : ent.type === 'wall' ? 2 : 1.5}
-                          />
-                        ) : (
-                          <g transform={`translate(${ent.x1}, ${ent.y1}) rotate(${angleDeg})`}>
-                            <rect
-                              x={0}
-                              y={-thick / 2}
-                              width={len}
-                              height={thick}
-                              fill={ent.type === 'wall' ? 'url(#wall-concrete-hatch)' : '#273647'}
-                              stroke={strokeColor}
-                              strokeWidth={isSelected ? 2.5 : isHovered ? 2.5 : ent.type === 'wall' ? 2 : 1.5}
-                            />
-                          </g>
-                        )}
-
-                        {/* CAD Control Grips when selected */}
-                        {isSelected && (
-                          <g className="pointer-events-none">
-                            <rect x={ent.x1 - 3.5} y={ent.y1 - 3.5} width="7" height="7" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
-                            <rect x={ent.x2 - 3.5} y={ent.y2 - 3.5} width="7" height="7" fill="#4cd7f6" stroke="#051424" strokeWidth="1" />
-                            <rect x={(ent.x1 + ent.x2) / 2 - 3.5} y={(ent.y1 + ent.y2) / 2 - 3.5} width="7" height="7" fill="#ffb95f" stroke="#051424" strokeWidth="1" />
-                          </g>
-                        )}
-                      </g>
-
-                      {/* Tableaux de maçonnerie aux deux extrémités de chaque ouverture */}
-                      {openings.map(op => {
-                        const opAngleRad = Math.atan2(op.y2 - op.y1, op.x2 - op.x1);
-                        const halfThick = thick / 2;
-                        const perpX = -Math.sin(opAngleRad) * halfThick;
-                        const perpY = Math.cos(opAngleRad) * halfThick;
-                        return (
-                          <g key={`jambs-${op.id}`} className="pointer-events-none">
-                            <line
-                              x1={op.x1 - perpX}
-                              y1={op.y1 - perpY}
-                              x2={op.x1 + perpX}
-                              y2={op.y1 + perpY}
-                              stroke={strokeColor}
-                              strokeWidth={isSelected ? 2.5 : isHovered ? 2.2 : ent.type === 'wall' ? 2 : 1.5}
-                            />
-                            <line
-                              x1={op.x2 - perpX}
-                              y1={op.y2 - perpY}
-                              x2={op.x2 + perpX}
-                              y2={op.y2 + perpY}
-                              stroke={strokeColor}
-                              strokeWidth={isSelected ? 2.5 : isHovered ? 2.2 : ent.type === 'wall' ? 2 : 1.5}
-                            />
-                          </g>
-                        );
-                      })}
-                    </React.Fragment>
+                      <text x={ent.x1} y={ent.y1} fontSize={fs} fill={ent.color || l.color} fontFamily="Inter, sans-serif" className="select-none">
+                        {lines.map((ln, i) => (
+                          <tspan key={i} x={ent.x1} dy={i === 0 ? 0 : '1.2em'}>{ln}</tspan>
+                        ))}
+                      </text>
+                    </g>
                   );
                 })}
 
@@ -4965,15 +5190,18 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                       const w = Math.max(10, Math.abs(cursorPos.x - draftStart.x));
                       const h = Math.max(10, Math.abs(cursorPos.y - draftStart.y));
                       const wt = wallThickness / 10;
+                      // corps du mur selon la ligne de référence : Nu Gauche = vers l'intérieur, Droite = vers l'extérieur
+                      const eo = wallJustif === 'Nu Droite' ? wt : wallJustif === 'Axe' ? wt / 2 : 0;
+                      const ei = wt - eo;
                       const wMm = Math.round(w * 10);
                       const hMm = Math.round(h * 10);
                       const areaM2 = ((wMm * hMm) / 1000000).toFixed(2);
                       return (
                         <g>
                           <rect x={minX} y={minY} width={w} height={h} fill="none" stroke="#4cd7f6" strokeWidth="2" strokeDasharray="4 3" />
-                          <rect x={minX + wt} y={minY + wt} width={Math.max(0, w - wt * 2)} height={Math.max(0, h - wt * 2)} fill="none" stroke="#4cd7f6" strokeWidth="1.5" strokeDasharray="2 2" />
+                          <rect x={minX + ei} y={minY + ei} width={Math.max(0, w - ei * 2)} height={Math.max(0, h - ei * 2)} fill="none" stroke="#4cd7f6" strokeWidth="1.5" strokeDasharray="2 2" />
                           <path
-                            d={`M ${minX} ${minY} H ${minX + w} V ${minY + h} H ${minX} Z M ${minX + wt} ${minY + wt} V ${minY + h - wt} H ${minX + w - wt} V ${minY + wt} Z`}
+                            d={`M ${minX - eo} ${minY - eo} H ${minX + w + eo} V ${minY + h + eo} H ${minX - eo} Z M ${minX + ei} ${minY + ei} V ${minY + h - ei} H ${minX + w - ei} V ${minY + ei} Z`}
                             fill="url(#wall-concrete-hatch)"
                             fillRule="evenodd"
                             opacity="0.8"
@@ -5000,11 +5228,12 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                       const halfThick = wallThickness / 20;
                       const perpX = Math.sin(angle) * halfThick;
                       const perpY = -Math.cos(angle) * halfThick;
+                      const c = placeWall(draftStart.x, draftStart.y, cursorPos.x, cursorPos.y, wallThickness);
                       const pts = [
-                        `${draftStart.x + perpX},${draftStart.y + perpY}`,
-                        `${cursorPos.x + perpX},${cursorPos.y + perpY}`,
-                        `${cursorPos.x - perpX},${cursorPos.y - perpY}`,
-                        `${draftStart.x - perpX},${draftStart.y - perpY}`,
+                        `${c.x1 + perpX},${c.y1 + perpY}`,
+                        `${c.x2 + perpX},${c.y2 + perpY}`,
+                        `${c.x2 - perpX},${c.y2 - perpY}`,
+                        `${c.x1 - perpX},${c.y1 - perpY}`,
                       ].join(' ');
                       return (
                         <g>
@@ -5021,15 +5250,17 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                       const w = Math.max(10, Math.abs(cursorPos.x - draftStart.x));
                       const h = Math.max(10, Math.abs(cursorPos.y - draftStart.y));
                       const pt = partitionThickness / 10;
+                      const peo = wallJustif === 'Nu Droite' ? pt : wallJustif === 'Axe' ? pt / 2 : 0;
+                      const pei = pt - peo;
                       const wMm = Math.round(w * 10);
                       const hMm = Math.round(h * 10);
                       const areaM2 = ((wMm * hMm) / 1000000).toFixed(2);
                       return (
                         <g>
                           <rect x={minX} y={minY} width={w} height={h} fill="none" stroke="#4edea3" strokeWidth="2" strokeDasharray="4 3" />
-                          <rect x={minX + pt} y={minY + pt} width={Math.max(0, w - pt * 2)} height={Math.max(0, h - pt * 2)} fill="none" stroke="#4edea3" strokeWidth="1.5" strokeDasharray="2 2" />
+                          <rect x={minX + pei} y={minY + pei} width={Math.max(0, w - pei * 2)} height={Math.max(0, h - pei * 2)} fill="none" stroke="#4edea3" strokeWidth="1.5" strokeDasharray="2 2" />
                           <path
-                            d={`M ${minX} ${minY} H ${minX + w} V ${minY + h} H ${minX} Z M ${minX + pt} ${minY + pt} V ${minY + h - pt} H ${minX + w - pt} V ${minY + pt} Z`}
+                            d={`M ${minX - peo} ${minY - peo} H ${minX + w + peo} V ${minY + h + peo} H ${minX - peo} Z M ${minX + pei} ${minY + pei} V ${minY + h - pei} H ${minX + w - pei} V ${minY + pei} Z`}
                             fill="#182736"
                             fillRule="evenodd"
                             opacity="0.9"
@@ -5052,11 +5283,12 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                       const halfThick = partitionThickness / 20;
                       const perpX = Math.sin(angle) * halfThick;
                       const perpY = -Math.cos(angle) * halfThick;
+                      const c = placeWall(draftStart.x, draftStart.y, cursorPos.x, cursorPos.y, partitionThickness);
                       const pts = [
-                        `${draftStart.x + perpX},${draftStart.y + perpY}`,
-                        `${cursorPos.x + perpX},${cursorPos.y + perpY}`,
-                        `${cursorPos.x - perpX},${cursorPos.y - perpY}`,
-                        `${draftStart.x - perpX},${draftStart.y - perpY}`,
+                        `${c.x1 + perpX},${c.y1 + perpY}`,
+                        `${c.x2 + perpX},${c.y2 + perpY}`,
+                        `${c.x2 - perpX},${c.y2 - perpY}`,
+                        `${c.x1 - perpX},${c.y1 - perpY}`,
                       ].join(' ');
                       return (
                         <g>
@@ -6158,11 +6390,11 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                 <span className="material-symbols-outlined text-[16px]">fit_screen</span>
               </button>
               <button
-                onClick={() => setActiveRail(activeRail === '3d' ? 'plan' : '3d')}
+                onClick={() => setActiveRail(activeRail === 'views' ? 'plan' : 'views')}
                 className="p-1 text-on-surface-variant hover:text-secondary hover:bg-surface-container rounded transition-colors"
-                title="Orbite 3D rapide"
+                title="Vues : façades et coupes"
               >
-                <span className="material-symbols-outlined text-[16px]">3d_rotation</span>
+                <span className="material-symbols-outlined text-[16px]">view_quilt</span>
               </button>
             </div>
           </div>
