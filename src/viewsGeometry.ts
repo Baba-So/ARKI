@@ -1,4 +1,5 @@
 import { CadEntity, CadLevel } from './types.ts';
+import { slabOf } from './levels.ts';
 
 /**
  * Projection des plans en façades (élévations) et coupes.
@@ -61,11 +62,12 @@ export interface Strip {
   wallId: string;
   levelId: string;
   z0: number; // altitude de la base du mur (mm)
+  slab: number; // épaisseur de la dalle sous ce niveau (mm)
   uMin: number;
   uMax: number;
   depth: number;
   height: number;
-  holes: Array<{ u0: number; u1: number; z0: number; z1: number; kind: 'door' | 'window'; id: string }>;
+  holes: Array<{ u0: number; u1: number; z0: number; z1: number; kind: 'door' | 'window'; id: string; blockId?: string }>;
   cut: boolean;
   thickness: number;
 }
@@ -131,11 +133,11 @@ export function buildStrips(levelData: LevelData[], cut: Cut | null, viewDir: Di
         if (cut && o1 * o2 < 0) {
           const t = o1 / (o1 - o2);
           const pu = p1.u + (p2.u - p1.u) * t;
-          holes.push({ u0: pu, u1: pu, z0, z1, kind: o.type as 'door' | 'window', id: o.id });
+          holes.push({ u0: pu, u1: pu, z0, z1, kind: o.type as 'door' | 'window', id: o.id, blockId: o.blockId });
           return;
         }
         if (u1 - u0 < 5) return;
-        holes.push({ u0, u1, z0, z1, kind: o.type as 'door' | 'window', id: o.id });
+        holes.push({ u0, u1, z0, z1, kind: o.type as 'door' | 'window', id: o.id, blockId: o.blockId });
       });
 
       const pa = project(viewDir, ax, ay), pb = project(viewDir, bx, by);
@@ -145,7 +147,7 @@ export function buildStrips(levelData: LevelData[], cut: Cut | null, viewDir: Di
         uMin = c - thick / 2; uMax = c + thick / 2;
       }
       result.push({
-        id: `${level.id}:${w.id}`, wallId: w.id, levelId: level.id, z0: lz,
+        id: `${level.id}:${w.id}`, wallId: w.id, levelId: level.id, z0: lz, slab: slabOf(level),
         uMin, uMax, depth: (pa.d + pb.d) / 2, height: h, holes, cut: false, thickness: thick,
       });
 
@@ -162,6 +164,7 @@ export function buildStrips(levelData: LevelData[], cut: Cut | null, viewDir: Di
             wallId: w.id,
             levelId: level.id,
             z0: lz,
+            slab: slabOf(level),
             uMin: c.u - width / 2,
             uMax: c.u + width / 2,
             depth: -1e9, // la coupe est toujours au premier plan
@@ -192,7 +195,7 @@ export const computeBounds = (strips: Strip[]): ViewBounds => {
     minU: Math.min(...strips.map(s => s.uMin)),
     maxU: Math.max(...strips.map(s => s.uMax)),
     maxZ: Math.max(...strips.map(s => s.z0 + s.height)),
-    minZ: Math.min(0, ...strips.map(s => s.z0 - 200)),
+    minZ: Math.min(0, ...strips.map(s => s.z0 - s.slab)),
   };
 };
 

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { CadTool, CadSettings, CadLayer, CadEntity, CadBlock, CadLevel, LayoutSheet, WallSubTool, ShapeSubTool, PolylineSubTool } from '../types.ts';
+import { CadTool, CadSettings, CadLayer, CadEntity, CadBlock, CadLevel, LayoutSheet, ProjectSnapshot, WallSubTool, ShapeSubTool, PolylineSubTool } from '../types.ts';
+import { DEFAULT_LAYERS, SAMPLE_ENTITIES } from '../constants/sampleProject.ts';
 import { LayerManager } from './LayerManager.tsx';
 import { PropertiesSidebar } from './PropertiesSidebar.tsx';
 import { CadLibraryPanel } from './CadLibraryPanel.tsx';
@@ -7,21 +8,36 @@ import { ArckiCadAgent } from '../agent.ts';
 import { ViewsPanel } from './ViewsPanel.tsx';
 import { LayoutPanel, createSheet } from './LayoutPanel.tsx';
 import { LevelManager } from './LevelManager.tsx';
+import { LevelsConfigDialog, LevelsConfigResult } from './LevelsConfigDialog.tsx';
+import { restackLevels } from '../levels.ts';
+import { BlockSvg, blockColor } from './BlockSvg.tsx';
+import { findBlock, useBlocks } from '../blockStore.ts';
+import { inferRenderType, isOpeningBlock, openingKindOf } from '../blockSymbols.ts';
 import { computeWallPolygons, polyToPoints, refToCenterline, justifToRef, refSign } from '../wallGeometry.ts';
 
 interface CadEditorProps {
   onOpenNewProject: () => void;
   onOpenExport: () => void;
+  /** Projet à charger (sinon : projet d'exemple « Villa Horizon »). */
+  initialProject?: ProjectSnapshot;
+  /** Appelé (avec temporisation) après chaque modification, et à la fermeture si des changements restent : enregistrement automatique + exports. */
+  onSnapshot?: (snapshot: ProjectSnapshot) => void;
+  /** Permet à App de lire l'état exact de l'éditeur à la demande (exports). */
+  getSnapshotRef?: React.MutableRefObject<(() => ProjectSnapshot) | null>;
 }
 
 export const CadEditor: React.FC<CadEditorProps> = ({
   onOpenExport,
+  initialProject,
+  onSnapshot,
+  getSnapshotRef,
 }) => {
   // Navigation active tab in the left rail: 'plan' | 'views' | 'bim' | 'layout' | 'rendu' | 'config'
   const [activeRail, setActiveRail] = useState<'plan' | 'views' | 'bim' | 'layout' | 'rendu' | 'config'>('plan');
   
   // Active CAD tool on the left toolbar
   const [activeTool, setActiveTool] = useState<CadTool>('select');
+  useBlocks(); // se re-rend quand des blocs sont importés / supprimés (symboles du plan)
 
   // Right Dock active tab: 'props' | 'layers' | 'library' | 'ai'
   const [rightDockTab, setRightDockTab] = useState<'props' | 'layers' | 'library' | 'ai'>('props');
@@ -39,373 +55,12 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   const [isSidebarLibraryOpen, setIsSidebarLibraryOpen] = useState(false);
 
   // Layers State
-  const [layers, setLayers] = useState<CadLayer[]>([
-    {
-      id: 'structures',
-      name: 'Structures porteuses (A-MUR-EXT)',
-      category: 'structures',
-      color: '#4cd7f6',
-      visible: true,
-      locked: false,
-      opacity: 1,
-      entityCount: 4,
-      lineweight: '0.50mm',
-      description: 'Murs extérieurs béton banché et chaînage',
-    },
-    {
-      id: 'cloisons',
-      name: 'Cloisons légères (A-MUR-INT)',
-      category: 'cloisons',
-      color: '#869397',
-      visible: true,
-      locked: false,
-      opacity: 1,
-      entityCount: 3,
-      lineweight: '0.25mm',
-      description: 'Cloisons Placostil 72mm et séparations intérieures',
-    },
-    {
-      id: 'mobilier',
-      name: 'Mobilier & Agencement (A-MOB-AGENC)',
-      category: 'mobilier',
-      color: '#4edea3',
-      visible: true,
-      locked: false,
-      opacity: 1,
-      entityCount: 5,
-      lineweight: '0.15mm',
-      description: 'Îlot cuisine, lit king size, meuble vasque, canapé',
-    },
-    {
-      id: 'ouvertures',
-      name: 'Menuiseries & Baies (A-PORTE-FEN)',
-      category: 'ouvertures',
-      color: '#ffb95f',
-      visible: true,
-      locked: false,
-      opacity: 1,
-      entityCount: 3,
-      lineweight: '0.20mm',
-      description: 'Portes battantes et baie coulissante 2800x2150',
-    },
-    {
-      id: 'cotations',
-      name: 'Cotations & Surfaces (A-COTE-TEXT)',
-      category: 'cotations',
-      color: '#acedff',
-      visible: true,
-      locked: false,
-      opacity: 1,
-      entityCount: 6,
-      lineweight: '0.18mm',
-      description: 'Lignes de cotes associatives et étiquettes m²',
-    },
-  ]);
+  const [layers, setLayers] = useState<CadLayer[]>(() => initialProject?.layers ?? DEFAULT_LAYERS);
 
   // Initial Villa Horizon CAD Entities
-  const [entities, setEntities] = useState<CadEntity[]>([
-    // STRUCTURES (Murs Porteurs Extérieurs)
-    {
-      id: 'wall-north',
-      name: 'Mur Porteur Nord',
-      type: 'wall',
-      layerId: 'structures',
-      x1: 140,
-      y1: 160,
-      x2: 740,
-      y2: 160,
-      thickness: 200,
-      height: 2800,
-      material: 'Béton banché + ITE 140mm',
-      materialIndex: 'MAT-01',
-    },
-    {
-      id: 'wall-west',
-      name: 'Mur Porteur Ouest',
-      type: 'wall',
-      layerId: 'structures',
-      x1: 140,
-      y1: 690,
-      x2: 140,
-      y2: 160,
-      thickness: 200,
-      height: 2800,
-      material: 'Béton banché + ITE 140mm',
-      materialIndex: 'MAT-01',
-    },
-    {
-      id: 'wall-south',
-      name: 'Mur Porteur Sud',
-      type: 'wall',
-      layerId: 'structures',
-      x1: 740,
-      y1: 690,
-      x2: 140,
-      y2: 690,
-      thickness: 200,
-      height: 2800,
-      material: 'Béton banché + ITE 140mm',
-      materialIndex: 'MAT-01',
-    },
-    {
-      id: 'wall-east',
-      name: 'Mur Porteur Est',
-      type: 'wall',
-      layerId: 'structures',
-      x1: 740,
-      y1: 160,
-      x2: 740,
-      y2: 690,
-      thickness: 200,
-      height: 2800,
-      material: 'Béton banché + ITE 140mm',
-      materialIndex: 'MAT-01',
-    },
-
-    // CLOISONS
-    {
-      id: 'partition-salon-suite',
-      name: 'Cloison Séparation Salon / Suite',
-      type: 'partition',
-      layerId: 'cloisons',
-      x1: 140,
-      y1: 460,
-      x2: 420,
-      y2: 460,
-      thickness: 72,
-      height: 2800,
-      material: 'Placostil 72mm',
-      materialIndex: 'MAT-02',
-    },
-    {
-      id: 'partition-suite-sde',
-      name: 'Cloison Suite / SDE',
-      type: 'partition',
-      layerId: 'cloisons',
-      x1: 420,
-      y1: 460,
-      x2: 420,
-      y2: 690,
-      thickness: 72,
-      height: 2800,
-      material: 'Placostil 72mm',
-      materialIndex: 'MAT-02',
-    },
-    {
-      id: 'partition-cuisine-hall',
-      name: 'Cloison Cuisine / Couloir',
-      type: 'partition',
-      layerId: 'cloisons',
-      x1: 500,
-      y1: 160,
-      x2: 500,
-      y2: 340,
-      thickness: 72,
-      height: 2800,
-      material: 'Placostil 72mm',
-      materialIndex: 'MAT-02',
-    },
-
-    // OUVERTURES (Encastrées directement dans les murs et cloisons)
-    {
-      id: 'door-suite',
-      name: 'Porte Suite Parentale (830mm)',
-      type: 'door',
-      layerId: 'ouvertures',
-      x1: 200,
-      y1: 460,
-      x2: 283,
-      y2: 460,
-      angle: 0,
-      thickness: 72,
-      hostWallId: 'partition-salon-suite',
-      openingWidth: 830,
-      doorSwing: 'right',
-      doorAngle: 90,
-      flipSwing: false,
-      label: 'PORTE 830mm',
-      materialIndex: 'MAT-07',
-    },
-    {
-      id: 'door-sde',
-      name: 'Porte Salle d\'eau (730mm)',
-      type: 'door',
-      layerId: 'ouvertures',
-      x1: 420,
-      y1: 500,
-      x2: 420,
-      y2: 573,
-      angle: 90,
-      thickness: 72,
-      hostWallId: 'partition-suite-sde',
-      openingWidth: 730,
-      doorSwing: 'left',
-      doorAngle: 90,
-      flipSwing: false,
-      label: 'PORTE 730mm',
-      materialIndex: 'MAT-07',
-    },
-    {
-      id: 'window-bay-salon',
-      name: 'Baie Coulissante 1800x2150',
-      type: 'window',
-      layerId: 'ouvertures',
-      x1: 140,
-      y1: 220,
-      x2: 140,
-      y2: 400,
-      angle: 90,
-      thickness: 200,
-      hostWallId: 'wall-west',
-      openingWidth: 1800,
-      label: 'BAIE COULISSANTE 1800x2150',
-      materialIndex: 'MAT-06',
-    },
-    {
-      id: 'window-cuisine',
-      name: 'Fenêtre Cuisine 1200x1250',
-      type: 'window',
-      layerId: 'ouvertures',
-      x1: 550,
-      y1: 160,
-      x2: 670,
-      y2: 160,
-      angle: 0,
-      thickness: 200,
-      hostWallId: 'wall-north',
-      openingWidth: 1200,
-      label: 'FENÊTRE 1200x1250',
-      materialIndex: 'MAT-06',
-    },
-
-    // MOBILIER
-    {
-      id: 'furniture-kitchen-island',
-      name: 'Îlot Central Cuisine',
-      type: 'furniture',
-      layerId: 'mobilier',
-      x1: 545,
-      y1: 265,
-      x2: 675,
-      y2: 320,
-      label: 'ÎLOT CENTRAL',
-      materialIndex: 'MAT-07',
-    },
-    {
-      id: 'furniture-sofa',
-      name: 'Canapé d\'angle Salon',
-      type: 'furniture',
-      layerId: 'mobilier',
-      x1: 170,
-      y1: 190,
-      x2: 280,
-      y2: 290,
-      label: 'CANAPÉ SALON',
-    },
-    {
-      id: 'furniture-bed',
-      name: 'Lit King Size 160x200',
-      type: 'furniture',
-      layerId: 'mobilier',
-      x1: 180,
-      y1: 520,
-      x2: 280,
-      y2: 640,
-      label: 'LIT 160x200',
-    },
-    {
-      id: 'furniture-vanity',
-      name: 'Meuble Double Vasque',
-      type: 'furniture',
-      layerId: 'mobilier',
-      x1: 430,
-      y1: 470,
-      x2: 530,
-      y2: 500,
-      label: 'DOUBLE VASQUE',
-    },
-
-    // COTATIONS & SURFACES
-    {
-      id: 'dim-north',
-      name: 'Cote Totale Façade Nord',
-      type: 'dim',
-      layerId: 'cotations',
-      x1: 120,
-      y1: 102,
-      x2: 740,
-      y2: 102,
-      label: '7 200',
-    },
-    {
-      id: 'dim-salon',
-      name: 'Cote Largeur Salon',
-      type: 'dim',
-      layerId: 'cotations',
-      x1: 140,
-      y1: 124,
-      x2: 500,
-      y2: 124,
-      label: '4 800',
-    },
-    {
-      id: 'room-salon',
-      name: 'Zone Salon de Réception',
-      type: 'room',
-      layerId: 'cotations',
-      x1: 140,
-      y1: 160,
-      x2: 500,
-      y2: 460,
-      label: 'SALON DE RÉCEPTION',
-      subText: 'PARQUET CHÊNE MASSIF',
-      area: 32.40,
-      height: 2.80,
-      hatchPattern: 'bois',
-    },
-    {
-      id: 'room-cuisine',
-      name: 'Zone Cuisine Ouverte',
-      type: 'room',
-      layerId: 'cotations',
-      x1: 500,
-      y1: 160,
-      x2: 720,
-      y2: 340,
-      label: 'CUISINE OUVERTE',
-      area: 14.20,
-      height: 2.80,
-      hatchPattern: 'carrelage',
-    },
-    {
-      id: 'room-suite',
-      name: 'Zone Suite Parentale',
-      type: 'room',
-      layerId: 'cotations',
-      x1: 140,
-      y1: 460,
-      x2: 420,
-      y2: 680,
-      label: 'SUITE PARENTALE',
-      area: 18.50,
-      height: 2.80,
-      hatchPattern: 'bois',
-    },
-    {
-      id: 'room-sde',
-      name: 'Zone Salle d\'eau',
-      type: 'room',
-      layerId: 'cotations',
-      x1: 420,
-      y1: 460,
-      x2: 560,
-      y2: 680,
-      label: 'SDE',
-      area: 6.20,
-      height: 2.80,
-      hatchPattern: 'carrelage',
-    },
-  ]);
+  const [entities, setEntities] = useState<CadEntity[]>(() =>
+    initialProject ? initialProject.entitiesByLevel[initialProject.activeLevelId] ?? [] : SAMPLE_ENTITIES
+  );
 
   // Selected Entities IDs set
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -413,15 +68,22 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   // ── Niveaux (RDC, R+1, …) ─────────────────────────────────────────────
   // `entities` contient toujours les entités du niveau ACTIF (tout le code de dessin reste inchangé) ;
   // les autres niveaux sont rangés dans `otherLevels` et échangés lors d'un changement de niveau.
-  const [levels, setLevels] = useState<CadLevel[]>([{ id: 'lvl-rdc', name: 'RDC', elevation: 0, height: 2800 }]);
-  const [activeLevelId, setActiveLevelId] = useState('lvl-rdc');
-  const [otherLevels, setOtherLevels] = useState<Record<string, CadEntity[]>>({});
+  const [levels, setLevels] = useState<CadLevel[]>(() => initialProject?.levels ?? [{ id: 'lvl-rdc', name: 'RDC', elevation: 0, height: 2800 }]);
+  const [activeLevelId, setActiveLevelId] = useState(() => initialProject?.activeLevelId ?? 'lvl-rdc');
+  const [otherLevels, setOtherLevels] = useState<Record<string, CadEntity[]>>(() => {
+    if (!initialProject) return {};
+    const { [initialProject.activeLevelId]: _active, ...rest } = initialProject.entitiesByLevel;
+    void _active;
+    return rest;
+  });
+  const [levelAutoStack, setLevelAutoStack] = useState(() => initialProject?.levelAutoStack ?? true); // altitudes recalculées automatiquement
+  const [isLevelsConfigOpen, setIsLevelsConfigOpen] = useState(false);
 
   const activeLevel = levels.find(l => l.id === activeLevelId) || levels[0];
 
   // Un outil devenu indisponible dans l'onglet courant retombe sur la sélection
   useEffect(() => {
-    const allowed = activeRail === 'plan' ? null : activeRail === 'layout' ? ['select', 'text'] : ['select'];
+    const allowed = activeRail === 'plan' ? null : activeRail === 'layout' ? ['select', 'text', 'rect', 'polyline'] : ['select'];
     if (allowed && !allowed.includes(activeTool)) {
       setActiveTool('select');
       setDraftStart(null);
@@ -429,9 +91,31 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   }, [activeRail]);
 
   // ── Mise en page : planches (conservées en changeant d'onglet) ──
-  const [sheets, setSheets] = useState<LayoutSheet[]>(() => [createSheet('Plan RDC', 'lvl-rdc', 50)]);
-  const [activeSheetId, setActiveSheetId] = useState(() => sheets[0].id);
+  const [sheets, setSheets] = useState<LayoutSheet[]>(() =>
+    initialProject?.sheets?.length ? initialProject.sheets : [createSheet('Plan RDC', initialProject?.activeLevelId ?? 'lvl-rdc', 50)]
+  );
+  const [activeSheetId, setActiveSheetId] = useState(() => initialProject?.activeSheetId ?? sheets[0].id);
   const entitiesByLevel: Record<string, CadEntity[]> = { ...otherLevels, [activeLevelId]: entities };
+  // ── Enregistrement automatique / exports : l'instantané complet du projet est remonté à App ──
+  const snapshot: ProjectSnapshot = { levels, activeLevelId, levelAutoStack, entitiesByLevel, layers, sheets, activeSheetId };
+  const snapRef = useRef(snapshot);
+  snapRef.current = snapshot;
+  useEffect(() => {
+    if (!getSnapshotRef) return;
+    getSnapshotRef.current = () => snapRef.current;
+    return () => { getSnapshotRef.current = null; };
+  }, []);
+  const firstRun = useRef(true);
+  const dirty = useRef(false);
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; return; } // pas d'enregistrement tant que rien n'a changé
+    dirty.current = true;
+    if (!onSnapshot) return;
+    const t = setTimeout(() => { onSnapshot(snapRef.current); dirty.current = false; }, 600);
+    return () => clearTimeout(t);
+  }, [levels, entities, otherLevels, layers, sheets, levelAutoStack, activeLevelId, activeSheetId]);
+  useEffect(() => () => { if (dirty.current) onSnapshot?.(snapRef.current); }, []); // dernière sauvegarde à la fermeture
+
   const entityCounts = Object.fromEntries(Object.entries(entitiesByLevel).map(([k, v]) => [k, v.length]));
   // Niveau situé juste en dessous : affiché en fond estompé pour le calage des murs
   const belowLevel = [...levels]
@@ -482,8 +166,31 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     gotoLevel(nl.id, { ...entitiesByLevel, [nl.id]: copy }, next);
   };
   const updateLevel = (id: string, patch: Partial<CadLevel>) => {
-    setLevels(prev => prev.map(l => (l.id === id ? { ...l, ...patch } : l)));
+    let next = levels.map(l => (l.id === id ? { ...l, ...patch } : l));
+    if (patch.elevation !== undefined) setLevelAutoStack(false); // altitude saisie à la main : on quitte le mode automatique
+    else if (levelAutoStack && (patch.height !== undefined || patch.slabMm !== undefined)) next = restackLevels(next);
+    setLevels(next);
     if (id === activeLevelId && patch.height) setWallHeight(patch.height);
+  };
+  /** Applique la configuration des étages (hauteurs, dalles, altitudes, niveaux ajoutés / supprimés). */
+  const applyLevelsConfig = (r: LevelsConfigResult) => {
+    const keep = new Set(r.levels.map(l => l.id));
+    const data: Record<string, CadEntity[]> = { ...entitiesByLevel };
+    Object.keys(data).forEach(k => { if (!keep.has(k)) delete data[k]; });
+    r.levels.forEach(l => {
+      if (!data[l.id]) data[l.id] = [];
+      const old = levels.find(o => o.id === l.id);
+      if (r.updateWalls && old && old.height !== l.height) {
+        data[l.id] = data[l.id].map(e => (e.type === 'wall' || e.type === 'partition' ? { ...e, height: l.height } : e));
+      }
+    });
+    const target = keep.has(activeLevelId)
+      ? activeLevelId
+      : [...r.levels].sort((a, b) => Math.abs(a.elevation) - Math.abs(b.elevation))[0].id;
+    setLevels(r.levels);
+    setLevelAutoStack(r.autoStack);
+    gotoLevel(target, data, r.levels);
+    setIsLevelsConfigOpen(false);
   };
   const deleteLevel = (id: string) => {
     if (levels.length <= 1) return;
@@ -586,7 +293,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     }
 
     // Openings (portes et fenêtres) : Encastrement obligatoire sur mur
-    if (block.category === 'menuiserie' || block.renderType === 'door' || block.renderType === 'window') {
+    if (isOpeningBlock(block)) {
       const snap = findWallSnap(dropX, dropY, block.widthMm, 9999);
       if (!snap) {
         setCliHistory(prev => [
@@ -596,7 +303,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         ]);
         return;
       }
-      const isWin = block.renderType === 'window';
+      const isWin = openingKindOf(block) === 'window';
       const newEntity: CadEntity = {
         id: `${block.id}-${Date.now()}`,
         name: `${block.name} encastrée (${snap.wall.type === 'partition' ? 'Cloison' : 'Mur'})`,
@@ -1628,6 +1335,8 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
   // Handle Canvas Mouse Down
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    // Vues / Mise en page : les panneaux gèrent leurs propres interactions, le plan ne réagit pas
+    if (activeRail !== 'plan') return;
     // Clic Molette (button 1) ou Alt+Clic ou Espace maintenu ou Outil Pan : Panoramique immédiat
     if (e.button === 1 || e.altKey || isSpaceHeld || activeTool === 'pan') {
       setIsPanning(true);
@@ -1907,6 +1616,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
   // Handle Canvas Click to create elements
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (activeRail !== 'plan') return; // les clics dans Vues / Mise en page n'agissent pas sur le plan
     if (e.button !== 0 || isBoxSelecting) return;
 
     if (activeTool === 'select') {
@@ -2622,7 +2332,9 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       if (activeRail !== 'plan') {
         const k = e.key.toLowerCase();
         if (k === 'v' && !e.ctrlKey && !e.metaKey) setActiveTool('select');
-        else if (k === 't' && activeRail === 'layout') setActiveTool('text');
+        else if (activeRail === 'layout' && !e.ctrlKey && !e.metaKey && k === 't') setActiveTool('text');
+        else if (activeRail === 'layout' && !e.ctrlKey && !e.metaKey && k === 'r') setActiveTool('rect');
+        else if (activeRail === 'layout' && !e.ctrlKey && !e.metaKey && k === 'l') setActiveTool('polyline');
         return;
       }
 
@@ -3719,7 +3431,17 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             onDuplicate={duplicateLevel}
             onUpdate={updateLevel}
             onDelete={deleteLevel}
+            onOpenConfig={() => setIsLevelsConfigOpen(true)}
           />
+          {isLevelsConfigOpen && (
+            <LevelsConfigDialog
+              levels={levels}
+              entityCounts={entityCounts}
+              autoStack={levelAutoStack}
+              onApply={applyLevelsConfig}
+              onClose={() => setIsLevelsConfigOpen(false)}
+            />
+          )}
           <button
             onClick={() => setActiveRail(activeRail === 'views' ? 'plan' : 'views')}
             className={`flex items-center gap-1 px-2 py-0.5 rounded border border-outline-variant/20 text-[11px] font-mono transition-colors ${
@@ -3873,7 +3595,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             { id: 'text', icon: 'title', key: 'T', title: activeRail === 'layout' ? 'Texte sur la planche (T) : cliquez sur la planche' : 'Texte / annotation sur le plan (T)' },
           ].map((t) => {
             // Outils disponibles selon l'onglet : Plan = tous ; Vues = sélection ; Mise en page = sélection + texte
-            const enabled = activeRail === 'plan' || (activeRail === 'layout' ? ['select', 'text'] : ['select']).includes(t.id);
+            const enabled = activeRail === 'plan' || (activeRail === 'layout' ? ['select', 'text', 'rect', 'polyline'] : ['select']).includes(t.id);
             return (
             <div key={t.id} className="relative group">
               <button
@@ -4143,6 +3865,10 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               setActiveSheetId={setActiveSheetId}
               activeTool={activeTool}
               setActiveTool={setActiveTool}
+              shapeSubTool={shapeSubTool}
+              setShapeSubTool={setShapeSubTool}
+              polylineSubTool={polylineSubTool}
+              setPolylineSubTool={setPolylineSubTool}
               onBackToPlan={() => setActiveRail('plan')}
             />
           ) : activeRail === 'views' ? (
@@ -4369,27 +4095,29 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                       className="cursor-pointer group"
                       opacity={l.locked ? 0.6 : 1}
                     >
-                      <rect
-                        x={Math.min(ent.x1, ent.x2)}
-                        y={Math.min(ent.y1, ent.y2)}
-                        width={w}
-                        height={h}
-                        fill="#0c1d2e"
-                        fillOpacity="0.8"
-                        stroke={strokeColor}
-                        strokeWidth={isSelected ? 2 : isHovered ? 1.8 : 1.2}
-                        strokeDasharray={isHovered ? '3 2' : '4 2'}
-                      />
-                      <text
-                        x={(ent.x1 + ent.x2) / 2}
-                        y={(ent.y1 + ent.y2) / 2 + 3}
-                        textAnchor="middle"
-                        fill={strokeColor}
-                        className="text-[8px] font-mono select-none pointer-events-none"
-                        fontFamily="JetBrains Mono"
-                      >
-                        {ent.label || ent.name}
-                      </text>
+                      {(() => {
+                        // Symbole du bloc (vue de dessus) étiré dans l'emprise de l'entité ;
+                        // meubles posés sans bloc d'origine : symbole déduit du nom
+                        const blk = findBlock(ent.blockId) || {
+                          id: `inferred-${ent.id}`, name: ent.name, category: 'sejour' as const, widthMm: Math.max(w, 1) * 10, heightMm: Math.max(h, 1) * 10,
+                          defaultLayer: ent.layerId, icon: 'chair', description: '', renderType: inferRenderType(ent.name),
+                        };
+                        const minX = Math.min(ent.x1, ent.x2), minY = Math.min(ent.y1, ent.y2);
+                        return (
+                          <>
+                            <rect x={minX} y={minY} width={w} height={h} fill="transparent" />
+                            <BlockSvg block={blk} view="top" stretch color={isSelected || isHovered ? strokeColor : blockColor(blk)} box={{ x: minX, y: minY, width: w, height: h }} />
+                            {(isSelected || isHovered) && (
+                              <rect x={minX} y={minY} width={w} height={h} fill="none" stroke={strokeColor} strokeWidth={isSelected ? 1.6 : 1.2} strokeDasharray={isHovered ? '3 2' : '4 2'} />
+                            )}
+                            {w >= 40 && (
+                              <text x={minX + w / 2} y={minY + h + 9} textAnchor="middle" fill={strokeColor} className="text-[7px] font-mono select-none pointer-events-none" fontFamily="JetBrains Mono" opacity={0.85}>
+                                {ent.label || ent.name}
+                              </text>
+                            )}
+                          </>
+                        );
+                      })()}
 
                       {/* Grips on selection */}
                       {isSelected && (

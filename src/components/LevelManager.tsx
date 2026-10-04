@@ -11,13 +11,14 @@ interface LevelManagerProps {
   onDuplicate: (id: string) => void;
   onUpdate: (id: string, patch: Partial<CadLevel>) => void;
   onDelete: (id: string) => void;
+  onOpenConfig?: () => void;
 }
 
 const fmt = (mm: number) => `${mm >= 0 ? '+' : '−'}${(Math.abs(mm) / 1000).toFixed(2)} m`;
 
 /** Sélecteur de niveau (HUD) + panneau de gestion des niveaux (RDC, R+1, sous-sol…). */
 export const LevelManager: React.FC<LevelManagerProps> = ({
-  levels, activeLevelId, entityCounts, onSelect, onAddAbove, onAddBelow, onDuplicate, onUpdate, onDelete,
+  levels, activeLevelId, entityCounts, onSelect, onAddAbove, onAddBelow, onDuplicate, onUpdate, onDelete, onOpenConfig,
 }) => {
   const [open, setOpen] = useState(false);
   const sorted = [...levels].sort((a, b) => b.elevation - a.elevation);
@@ -121,6 +122,14 @@ export const LevelManager: React.FC<LevelManagerProps> = ({
               <span className="material-symbols-outlined text-[14px]">add</span> Sous-sol
             </button>
           </div>
+          {onOpenConfig && (
+            <button
+              onClick={() => { setOpen(false); onOpenConfig(); }}
+              className="px-2 py-1.5 rounded border border-primary/40 text-primary hover:bg-primary/10 font-mono text-[10px] flex items-center justify-center gap-1"
+            >
+              <span className="material-symbols-outlined text-[14px]">tune</span> Configurer les étages…
+            </button>
+          )}
           <p className="font-mono text-[9px] text-outline leading-snug">
             Le niveau situé juste en dessous est affiché en fond estompé. Les Vues empilent tous les niveaux.
           </p>

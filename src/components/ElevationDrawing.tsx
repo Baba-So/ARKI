@@ -1,5 +1,8 @@
 import React from 'react';
 import { ViewModel } from '../viewsGeometry.ts';
+import { findBlock } from '../blockStore.ts';
+import { slabOf } from '../levels.ts';
+import { BlockSvg } from './BlockSvg.tsx';
 
 interface ElevationDrawingProps {
   model: ViewModel;
@@ -17,7 +20,6 @@ interface ElevationDrawingProps {
  */
 export const ElevationDrawing: React.FC<ElevationDrawingProps> = ({ model, mode, activeLevelId, selectedIds = [], showDims = true, paper = false }) => {
   const { strips, bounds, levels } = model;
-  const slabT = 200;
   const dimY = -bounds.minZ + 600;
   const c = paper
     ? { wall: '#ffffff', wallThin: '#f1f5f9', stroke: '#111827', cutStroke: '#111827', hole: '#ffffff', slab: '#ffffff', ground: '#64748b', glass: '#0ea5e9', door: '#a16207', dim: '#be185d', hatchBg: '#ffffff', hatchLine: '#111827' }
@@ -40,14 +42,17 @@ export const ElevationDrawing: React.FC<ElevationDrawingProps> = ({ model, mode,
       <rect x={bounds.minU - 8000} y={0} width={bounds.maxU - bounds.minU + 16000} height={900 - Math.min(bounds.minZ, 0)} fill={`url(#views-ground-hatch-${id})`} />
       <line x1={bounds.minU - 8000} y1={0} x2={bounds.maxU + 8000} y2={0} stroke={c.ground} strokeWidth={22} />
 
-      {/* Dalles : fondations (RDC), planchers intermédiaires et toiture-terrasse */}
-      {[...levels.map(l => l.elevation), ...(levels.length ? [Math.max(...levels.map(l => l.elevation + l.height))] : [])].map((z, i) => (
+      {/* Dalles : une sous chaque niveau (épaisseur propre au niveau) + dalle de toiture au-dessus du dernier niveau */}
+      {[
+        ...levels.map(l => ({ z: l.elevation, t: slabOf(l) })),
+        ...(levels.length ? (() => { const top = [...levels].sort((a, b) => b.elevation - a.elevation)[0]; return [{ z: top.elevation + top.height + slabOf(top), t: slabOf(top) }]; })() : []),
+      ].map((sl, i) => (
         <rect
           key={`slab-${i}`}
           x={bounds.minU - 300}
-          y={-z}
+          y={-sl.z}
           width={bounds.maxU - bounds.minU + 600}
-          height={slabT}
+          height={sl.t}
           fill={mode === 'section' ? `url(#views-cut-hatch-${id})` : c.slab}
           stroke={c.stroke}
           strokeWidth={14}
@@ -68,13 +73,17 @@ export const ElevationDrawing: React.FC<ElevationDrawingProps> = ({ model, mode,
               return (
                 <g key={`${s.id}-h${i}`}>
                   <rect x={hh.u0} y={-hh.z1} width={hs} height={hh.z1 - hh.z0} fill={c.hole} stroke={stroke} strokeWidth={10} />
-                  {hh.kind === 'window' && !s.cut && (
+                  {!s.cut && hs > 5 && findBlock(hh.blockId) && (
+                    // vue de face du bloc d'ouverture (symbole paramétrique ou SVG importé), étirée dans la baie
+                    <BlockSvg block={findBlock(hh.blockId)!} view="front" stretch color={paper ? '#111827' : hh.kind === 'door' ? c.door : c.glass} box={{ x: hh.u0, y: -hh.z1, width: hs, height: hh.z1 - hh.z0 }} />
+                  )}
+                  {hh.kind === 'window' && !s.cut && !findBlock(hh.blockId) && (
                     <>
                       <rect x={hh.u0 + 60} y={-hh.z1 + 60} width={Math.max(hs - 120, 0)} height={hh.z1 - hh.z0 - 120} fill={c.glass} fillOpacity={0.2} stroke={c.glass} strokeWidth={8} />
                       <line x1={(hh.u0 + hh.u1) / 2} y1={-hh.z1 + 60} x2={(hh.u0 + hh.u1) / 2} y2={-hh.z0 - 60} stroke={c.glass} strokeWidth={8} />
                     </>
                   )}
-                  {hh.kind === 'door' && !s.cut && (
+                  {hh.kind === 'door' && !s.cut && !findBlock(hh.blockId) && (
                     <rect x={hh.u0 + 50} y={-hh.z1 + 50} width={Math.max(hs - 100, 0)} height={hh.z1 - hh.z0 - 50} fill={c.door} fillOpacity={0.15} stroke={c.door} strokeWidth={8} />
                   )}
                 </g>

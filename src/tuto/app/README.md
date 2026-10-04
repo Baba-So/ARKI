@@ -3,7 +3,7 @@
 Les chapitres du dossier parent (`../README.md`) expliquent **comment le moteur fonctionne**.
 Ce dossier `app/` répond à une autre question : **« Je veux ajouter X à l'application, par où commencer ? »**
 
-Chaque guide est une **recette pas à pas** : fichiers à toucher, ordre des modifications, extraits de code réels, check-list de vérification et pièges à éviter.
+Chaque guide (01 à 11) est une **recette pas à pas** : fichiers à toucher, ordre des modifications, extraits de code réels, check-list de vérification et pièges à éviter.
 
 ---
 
@@ -20,6 +20,8 @@ Chaque guide est une **recette pas à pas** : fichiers à toucher, ordre des mod
 | Un **calque**, un **matériau**, un **bloc de bibliothèque** | [07 — Calques, matériaux, bibliothèque](./07_calques_materiaux_bibliotheque.md) |
 | Une **commande CLI**, un **raccourci**, un **export** | [08 — Commandes, raccourcis, exports](./08_commandes_raccourcis_exports.md) |
 | Vérifier mon travail, respecter les conventions | [09 — Vérifier, tester, conventions](./09_verifier_tester_conventions.md) |
+| Des **blocs à vues multiples**, leur **import**, le **prompt IA** | [10 — Blocs : vues, import, prompt IA](./10_blocs_vues_import_et_prompt_ia.md) |
+| Le **tableau de bord**, l'**enregistrement** des projets, un **format d'export** | [11 — Projets, tableau de bord, exports](./11_projets_dashboard_et_exports.md) |
 
 ---
 

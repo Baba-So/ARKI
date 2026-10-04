@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { ScreenType } from './types.ts';
+import React, { useCallback, useRef, useState } from 'react';
+import { ProjectMeta, ProjectSnapshot, ScreenType } from './types.ts';
 import { Header } from './components/Header.tsx';
 import { CadEditor } from './components/CadEditor.tsx';
 import { Dashboard } from './components/Dashboard.tsx';
@@ -12,52 +12,45 @@ import { AuthScreen } from './components/AuthScreen.tsx';
 import { NewProjectModal } from './components/NewProjectModal.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
 import { ExportModal } from './components/ExportModal.tsx';
+import { createProject, getProjectMeta, loadProject, saveProject, SAMPLE_ID } from './projectStore.ts';
+
+type ProjectRef = Pick<ProjectMeta, 'id' | 'name' | 'version'>;
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('dashboard');
-  const [currentProject, setCurrentProject] = useState({
-    id: 'villa-horizon',
-    name: 'Villa Horizon',
-    version: 'v1.4',
-  });
+  const [currentProject, setCurrentProject] = useState<ProjectRef>({ id: SAMPLE_ID, name: 'Villa Horizon', version: 'v1.4' });
+  // Projet chargé dans l'éditeur (la clé force un rechargement complet de l'éditeur à chaque ouverture)
+  const [editorProject, setEditorProject] = useState<{ key: number; snapshot: ProjectSnapshot | undefined }>({ key: 0, snapshot: undefined });
 
   // Modals state
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
-  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportTarget, setExportTarget] = useState<{ snapshot: ProjectSnapshot | null; meta: ProjectMeta | undefined } | null>(null);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Handle project opening from dashboard
+  // État courant de l'éditeur (fourni par CadEditor) et projet ouvert, lisibles depuis les callbacks sans les recréer
+  const getSnapshotRef = useRef<(() => ProjectSnapshot) | null>(null);
+  const currentIdRef = useRef(currentProject.id);
+  currentIdRef.current = currentProject.id;
+
+  /** Enregistrement automatique du projet ouvert (appelé par l'éditeur après chaque modification). */
+  const handleSnapshot = useCallback((snap: ProjectSnapshot) => {
+    saveProject(currentIdRef.current, snap);
+  }, []);
+
   const handleOpenProject = (projectId: string) => {
-    if (projectId === 'villa-horizon') {
-      setCurrentProject({
-        id: 'villa-horizon',
-        name: 'Villa Horizon',
-        version: 'v1.4',
-      });
-    } else if (projectId === 'residence-les-pins') {
-      setCurrentProject({
-        id: 'residence-les-pins',
-        name: 'Résidence Les Pins',
-        version: 'v2.1',
-      });
-    } else if (projectId === 'loft-marais') {
-      setCurrentProject({
-        id: 'loft-marais',
-        name: 'Extension Loft Marais',
-        version: 'v1.0',
-      });
-    } else {
-      setCurrentProject({
-        id: 'pavillon-solaire',
-        name: 'Pavillon Solaire Bioclimatique',
-        version: 'v0.9',
-      });
+    const meta = getProjectMeta(projectId);
+    const snap = loadProject(projectId);
+    if (!meta || !snap) {
+      alert('Projet introuvable : il a peut-être été supprimé.');
+      return;
     }
+    setCurrentProject({ id: meta.id, name: meta.name, version: meta.version });
+    setEditorProject(p => ({ key: p.key + 1, snapshot: snap }));
     setCurrentScreen('editor');
   };
 
-  // Handle new project creation from modal
+  // Création d'un projet depuis la fenêtre « Nouveau projet » : projet vierge (RDC, calques normalisés)
   const handleCreateProject = (info: {
     name: string;
     location: string;
@@ -67,12 +60,18 @@ export default function App() {
     template: string;
     orientation: number;
   }) => {
-    setCurrentProject({
-      id: `proj-${Date.now()}`,
-      name: info.name || 'Nouveau Projet CAD',
-      version: 'v1.0',
-    });
-    setCurrentScreen('editor');
+    const meta = createProject({ name: info.name, location: info.location, phase: info.phase, hspMm: info.hsp > 0 ? Math.round(info.hsp * 1000) : undefined });
+    handleOpenProject(meta.id);
+  };
+
+  /** Ouvre l'export du projet de l'éditeur (état exact en cours) ou d'un projet enregistré (depuis le tableau de bord). */
+  const openExport = (projectId?: string) => {
+    if (!projectId && currentScreen === 'editor' && getSnapshotRef.current) {
+      setExportTarget({ snapshot: getSnapshotRef.current(), meta: getProjectMeta(currentProject.id) ?? undefined });
+      return;
+    }
+    const id = projectId ?? currentProject.id;
+    setExportTarget({ snapshot: loadProject(id), meta: getProjectMeta(id) });
   };
 
   return (
@@ -83,7 +82,7 @@ export default function App() {
           currentScreen={currentScreen}
           onNavigate={(screen) => setCurrentScreen(screen)}
           onOpenNewProject={() => setIsNewProjectModalOpen(true)}
-          onOpenExport={() => setIsExportModalOpen(true)}
+          onOpenExport={() => openExport()}
           onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
           projectName={currentProject.name}
           projectVersion={currentProject.version}
@@ -105,14 +104,19 @@ export default function App() {
           <Dashboard
             onOpenProject={handleOpenProject}
             onOpenNewProject={() => setIsNewProjectModalOpen(true)}
+            onExportProject={openExport}
             searchQuery={searchQuery}
           />
         )}
 
         {currentScreen === 'editor' && (
           <CadEditor
+            key={editorProject.key}
+            initialProject={editorProject.snapshot}
+            onSnapshot={handleSnapshot}
+            getSnapshotRef={getSnapshotRef}
             onOpenNewProject={() => setIsNewProjectModalOpen(true)}
-            onOpenExport={() => setIsExportModalOpen(true)}
+            onOpenExport={() => openExport()}
           />
         )}
 
@@ -141,11 +145,13 @@ export default function App() {
         onCreateProject={handleCreateProject}
       />
 
-      {/* Export Modal (DWG, DXF, IFC, PDF) */}
+      {/* Export Modal (projet, SVG, DXF, PDF, rapport, métrés) */}
       <ExportModal
-        isOpen={isExportModalOpen}
-        onClose={() => setIsExportModalOpen(false)}
-        projectName={currentProject.name}
+        isOpen={!!exportTarget}
+        onClose={() => setExportTarget(null)}
+        projectName={exportTarget?.meta?.name ?? currentProject.name}
+        snapshot={exportTarget?.snapshot ?? null}
+        meta={exportTarget?.meta}
       />
 
       {/* Command Palette (⌘K) */}
@@ -154,7 +160,7 @@ export default function App() {
         onClose={() => setIsCommandPaletteOpen(false)}
         onNavigate={(screen) => setCurrentScreen(screen)}
         onOpenNewProject={() => setIsNewProjectModalOpen(true)}
-        onOpenExport={() => setIsExportModalOpen(true)}
+        onOpenExport={() => openExport()}
       />
     </div>
   );

@@ -7,7 +7,7 @@ Ce dossier contient **deux parcours complémentaires** :
 | Parcours | Question à laquelle il répond | Où |
 |---|---|---|
 | 📚 **Le cours** (15 chapitres) | *Comment ça marche ?* — concepts, algorithmes, code expliqué | ci-dessous |
-| 🧩 **Les guides d'extension** (9 recettes) | *Comment j'ajoute un outil, un paramètre, un onglet… ?* | [`app/`](./app/README.md) |
+| 🧩 **Les guides d'extension** (11 recettes) | *Comment j'ajoute un outil, un paramètre, un onglet… ?* | [`app/`](./app/README.md) |
 
 Objectif double : **(1)** maîtriser React 19 et TypeScript sur un projet concret et graphique ; **(2)** comprendre un logiciel de CAO 2D vectoriel paramétrique (murs, ouvertures encastrées, niveaux, façades, coupes, mise en page).
 
@@ -59,7 +59,7 @@ Chaque chapitre suit la même structure : **🎯 Objectifs → 📋 Prérequis �
 | 15 | [Mise en page & texte](./chapitre_15_mise_en_page_et_texte.md) | planches, échelle, cadres de vue, impression |
 
 ### 🧩 Guides d'extension — [`app/`](./app/README.md)
-[Architecture](./app/01_architecture_de_l_application.md) · [Créer un outil](./app/02_creer_un_outil.md) · [Créer un type d'entité](./app/03_creer_un_type_d_entite.md) · [Créer un paramètre](./app/04_creer_un_parametre.md) · [Créer un onglet](./app/05_creer_un_onglet.md) · [Inspecteur & panneaux](./app/06_inspecteur_et_panneaux.md) · [Calques, matériaux, bibliothèque](./app/07_calques_materiaux_bibliotheque.md) · [Commandes, raccourcis, exports](./app/08_commandes_raccourcis_exports.md) · [Vérifier, tester, conventions](./app/09_verifier_tester_conventions.md)
+[Architecture](./app/01_architecture_de_l_application.md) · [Créer un outil](./app/02_creer_un_outil.md) · [Créer un type d'entité](./app/03_creer_un_type_d_entite.md) · [Créer un paramètre](./app/04_creer_un_parametre.md) · [Créer un onglet](./app/05_creer_un_onglet.md) · [Inspecteur & panneaux](./app/06_inspecteur_et_panneaux.md) · [Calques, matériaux, bibliothèque](./app/07_calques_materiaux_bibliotheque.md) · [Commandes, raccourcis, exports](./app/08_commandes_raccourcis_exports.md) · [Vérifier, tester, conventions](./app/09_verifier_tester_conventions.md) · [Blocs : vues, import, prompt IA](./app/10_blocs_vues_import_et_prompt_ia.md) · [Projets, tableau de bord, exports](./app/11_projets_dashboard_et_exports.md)
 
 ---
 

@@ -264,6 +264,22 @@ Pourquoi deux unités de texte (mm papier sur les planches, px plan sur le plan)
 
 ---
 
+## Formes et personnalisation de la planche
+
+Une planche accepte aussi des **formes** (`LayoutShape`, `src/types.ts`) en plus des cadres de vue et des textes :
+
+| Forme | Outil (onglet Mise en page) | Interaction |
+|---|---|---|
+| Rectangle / ellipse | `rect` (sous-outil rectangle / cercle) | glisser |
+| Ligne brisée / polygone / courbe | `polyline` | clics ; double-clic ou Entrée pour finir ; clic sur le 1er point pour fermer ; Échap annule |
+| Main levée | `polyline` (sous-outil main levée) | maintenir et dessiner (lissé) |
+
+- Chaque forme porte son **style** : couleur et épaisseur du trait, pointillés, remplissage, opacité (+ coins arrondis pour le rectangle). Le panneau « Style des nouvelles formes » règle les valeurs par défaut.
+- Le glissement d'un objet utilise un **brouillon** `drag.patch` fusionné à l'objet (`eff`) puis validé au `mouseup` ; les sommets d'une ligne brisée ont leurs propres poignées (`data-handle="v<i>"`).
+- Ordre d'empilement (avancer / reculer), duplication et suppression sont dans l'en-tête du panneau de la forme.
+- **Personnalisation** (`LayoutSheet`, champs optionnels avec valeur par défaut) : marge, épaisseur du cadre, cadre / cartouche / flèche Nord indépendants, couleur du papier, pas d'accrochage (0,5 à 10 mm) et grille visible (non imprimée). Les textes ont couleur, police et italique.
+- Piège rencontré : le conteneur du plan écoute `onClick`/`onMouseDown`. Tant que `activeTool` valait `polyline` ou `rect`, les clics sur la planche déclenchaient aussi le tracé **du plan**. Les deux gestionnaires (`handleCanvasClick`, `handleCanvasMouseDown`) ignorent donc tout événement quand `activeRail !== 'plan'`.
+
 ## ⚠️ Pièges classiques
 - **Confondre `k` et `f`** : `k = 10/scale` pour le plan (px), `f = 1/scale` pour les élévations (mm). Se tromper donne un dessin dix fois trop grand ou trop petit.
 - **Oublier `getScreenCTM().inverse()`** : calculer avec `getBoundingClientRect` et un ratio fixe casse dès qu'on zoome.

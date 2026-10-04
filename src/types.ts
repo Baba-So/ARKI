@@ -27,6 +27,7 @@ export interface CadLevel {
   name: string; // ex. "RDC", "R+1"
   elevation: number; // altitude du plancher fini en mm (RDC = 0)
   height: number; // hauteur sous plafond / hauteur de mur par défaut en mm
+  slabMm?: number; // épaisseur de la dalle sous le plancher fini du niveau (mm), 200 par défaut
 }
 
 export interface CadLayer {
@@ -120,6 +121,26 @@ export interface CadBlock {
   icon: string;
   description: string;
   renderType: 'table' | 'sofa' | 'bed' | 'bath' | 'shower' | 'sink' | 'wc' | 'island' | 'door' | 'window' | 'generic';
+  // ── Blocs à vues multiples ──
+  // widthMm = largeur (X), heightMm = profondeur au plan (Y) — pour une ouverture : épaisseur de mur de référence —,
+  // zMm = hauteur verticale (Z).
+  kind?: 'furniture' | 'opening'; // défaut : déduit de la catégorie ('menuiserie' = ouverture)
+  openingKind?: 'door' | 'window'; // pour kind = 'opening'
+  zMm?: number;
+  views?: BlockViews;
+  custom?: boolean; // bloc importé par l'utilisateur
+}
+
+/**
+ * Vues d'un bloc : fragments SVG (éléments sans balise <svg>) dans un repère en MILLIMÈTRES, origine en haut à gauche.
+ *  - top   : viewBox 0 0 widthMm heightMm (mobilier : vue de dessus ; ouverture : coupe horizontale du mur)
+ *  - front : viewBox 0 0 widthMm zMm      (vue de face, sol en bas)
+ *  - side  : viewBox 0 0 heightMm zMm     (vue latérale, mobilier uniquement ; arrière à gauche)
+ */
+export interface BlockViews {
+  top?: string;
+  front?: string;
+  side?: string;
 }
 
 export interface CadWall {
@@ -245,9 +266,32 @@ export interface LayoutText {
   fontSize: number; // mm papier
   bold: boolean;
   align: 'start' | 'middle' | 'end';
+  italic?: boolean;
+  color?: string; // #rrggbb, défaut noir
+  fontFamily?: 'sans' | 'mono' | 'serif';
 }
 
-export type LayoutItem = LayoutViewport | LayoutText;
+/** Forme dessinée sur une planche (mm papier) : rectangle, ellipse, ligne brisée / polygone / courbe. */
+export interface LayoutShape {
+  kind: 'shape';
+  id: string;
+  shape: 'rect' | 'ellipse' | 'polyline';
+  x: number; // rect / ellipse : boîte
+  y: number;
+  w: number;
+  h: number;
+  points?: Array<{ x: number; y: number }>; // polyline : sommets absolus
+  closed?: boolean; // polyline fermée = polygone
+  smooth?: boolean; // polyline lissée = courbe
+  stroke: string;
+  strokeWidth: number; // mm
+  fill: string; // 'none' ou #rrggbb
+  opacity: number; // 0..1
+  dash: 'solid' | 'dashed' | 'dotted';
+  radius?: number; // coins arrondis (rect)
+}
+
+export type LayoutItem = LayoutViewport | LayoutText | LayoutShape;
 
 export interface LayoutSheet {
   id: string;
@@ -260,4 +304,48 @@ export interface LayoutSheet {
   sheetNo: string;
   showFrame: boolean;
   items: LayoutItem[];
+  // personnalisation de la planche (valeurs par défaut si absent)
+  margin?: number; // mm, défaut 10
+  frameWidth?: number; // mm, défaut 0.7
+  showCartouche?: boolean; // défaut true
+  showNorth?: boolean; // défaut true
+  paperColor?: string; // défaut #ffffff
+  gridMm?: number; // pas d'accrochage en mm, défaut 0.5
+  showGrid?: boolean; // grille d'aide à l'écran (non imprimée)
+}
+
+// ── Projets (persistance, import / export) ─────────────────────────────
+
+/** État complet d'un projet : c'est ce qui est enregistré, exporté en JSON et passé aux exports. */
+export interface ProjectSnapshot {
+  levels: CadLevel[];
+  activeLevelId: string;
+  levelAutoStack: boolean;
+  entitiesByLevel: Record<string, CadEntity[]>;
+  layers: CadLayer[];
+  sheets: LayoutSheet[];
+  activeSheetId?: string;
+}
+
+export interface ProjectStats {
+  levels: number;
+  objects: number;
+  areaM2: number; // somme des surfaces de pièces
+  sheets: number;
+  widthM: number; // emprise du bâti (murs)
+  depthM: number;
+}
+
+/** Fiche d'un projet affichée dans le tableau de bord. */
+export interface ProjectMeta {
+  id: string;
+  name: string;
+  phase: string; // libellé (ex. « Permis de construire (PC) »)
+  category: ProjectData['category'];
+  version: string;
+  location: string;
+  createdAt: string; // ISO
+  modified: string; // ISO
+  stats: ProjectStats;
+  sample?: boolean; // projet d'exemple fourni avec l'application
 }

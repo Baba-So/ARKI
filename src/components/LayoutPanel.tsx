@@ -1,195 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CadEntity, CadLevel, CadTool, LayoutItem, LayoutSheet, LayoutText, LayoutView, LayoutViewport, SheetFormat,
+  CadEntity, CadLevel, CadTool, LayoutItem, LayoutSheet, LayoutShape, LayoutText, LayoutView, LayoutViewport, PolylineSubTool, SheetFormat, ShapeSubTool,
 } from '../types.ts';
 import { computeWallPolygons, polyToPoints } from '../wallGeometry.ts';
 import { buildLevelData, buildViewModel, DIR_LABEL, Dir, ViewModel, ViewSpec } from '../viewsGeometry.ts';
 import { ElevationDrawing } from './ElevationDrawing.tsx';
+import { FORMATS, SCALES, MARGIN, CART_H, sheetSize, createSheet, newId } from '../layoutModel.ts';
+import { Ctx, FONT_STACK, Pt, SheetSvg, ViewportContent, dashOf, elevBox, itemBox, planBBox, polyPath, textBox, viewSpecOf } from './sheetRender.tsx';
 
 /**
  * Onglet « Mise en page » : planches (A4…A0) composées de cadres de vue (plans, façades, coupes) à l'échelle,
  * de textes et d'un cartouche. Unités : millimètres papier.
  */
 
-export const FORMATS: Record<SheetFormat, [number, number]> = {
-  A4: [210, 297],
-  A3: [297, 420],
-  A2: [420, 594],
-  A1: [594, 841],
-  A0: [841, 1189],
-};
-const SCALES = [20, 50, 75, 100, 125, 150, 200, 250, 500];
-const MARGIN = 10;
-const CART_H = 36;
-
-export const sheetSize = (s: Pick<LayoutSheet, 'format' | 'landscape'>) => {
-  const [pw, ph] = FORMATS[s.format];
-  return s.landscape ? { W: ph, H: pw } : { W: pw, H: ph };
-};
-
-let uid = 0;
-const newId = (p: string) => `${p}-${Date.now().toString(36)}${(uid++).toString(36)}`;
-
-/** Planche par défaut : un cadre de plan (niveau donné) occupant la zone de dessin. */
-export const createSheet = (name: string, levelId: string, scale = 50): LayoutSheet => {
-  const base: LayoutSheet = {
-    id: newId('sheet'),
-    name,
-    format: 'A3',
-    landscape: true,
-    project: 'Villa Horizon',
-    title: name,
-    author: '',
-    sheetNo: 'A-01',
-    showFrame: true,
-    items: [],
-  };
-  const { W, H } = sheetSize(base);
-  base.items.push({
-    kind: 'viewport',
-    id: newId('vp'),
-    x: MARGIN + 5,
-    y: MARGIN + 5,
-    w: W - MARGIN * 2 - 10,
-    h: H - MARGIN * 2 - CART_H - 16,
-    view: { type: 'plan', levelId },
-    scale,
-    title: name,
-    showTitle: true,
-    frame: false,
-  });
-  return base;
-};
-
-// ───────────────────────────── Dessin d'un plan ─────────────────────────────
-
-const planBBox = (ents: CadEntity[]) => {
-  const xs: number[] = [];
-  const ys: number[] = [];
-  ents.forEach(e => {
-    if (e.type === 'dim' || e.type === 'text') return;
-    xs.push(e.x1, e.x2);
-    ys.push(e.y1, e.y2);
-  });
-  if (!xs.length) return null;
-  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
-};
-
-const PlanDrawing: React.FC<{ entities: CadEntity[]; k: number; scale: number; showRoomNames: boolean }> = ({ entities, k, scale, showRoomNames }) => {
-  const wallPolys = useMemo(() => computeWallPolygons(entities.filter(e => e.type === 'wall' || e.type === 'partition')), [entities]);
-  const mmPaper = (realMm: number) => realMm / scale;
-
-  const renderEntity = (e: CadEntity) => {
-    switch (e.type) {
-      case 'room': {
-        const x = Math.min(e.x1, e.x2), y = Math.min(e.y1, e.y2);
-        const w = Math.abs(e.x2 - e.x1), h = Math.abs(e.y2 - e.y1);
-        return (
-          <g key={e.id}>
-            <rect x={x} y={y} width={w} height={h} fill="#f1f5f9" stroke="none" />
-            {showRoomNames && (
-              <text x={x + w / 2} y={y + h / 2} textAnchor="middle" fontSize={3.2 / k} fontFamily="JetBrains Mono, monospace" fill="#334155">
-                {(e.label || e.name || '').slice(0, 24)}
-                {e.area ? ` – ${e.area.toFixed(1)} m²` : ''}
-              </text>
-            )}
-          </g>
-        );
-      }
-      case 'wall':
-      case 'partition':
-        return wallPolys[e.id] ? (
-          <polygon key={e.id} points={polyToPoints(wallPolys[e.id])} fill={e.type === 'wall' ? '#111827' : '#475569'} stroke="none" />
-        ) : null;
-      case 'door':
-      case 'window': {
-        const t = mmPaper(e.thickness || 200) / k;
-        const dx = e.x2 - e.x1, dy = e.y2 - e.y1;
-        const len = Math.hypot(dx, dy) || 1;
-        const nx = -dy / len, ny = dx / len;
-        const sweep = (e.doorSwing === 'left') !== !!e.flipSwing ? 0 : 1;
-        return (
-          <g key={e.id}>
-            <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke="#ffffff" strokeWidth={t + 0.02 / k} />
-            {e.type === 'window' ? (
-              <>
-                <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke="#111827" strokeWidth={t * 0.35} />
-                <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke="#ffffff" strokeWidth={t * 0.15} />
-              </>
-            ) : (
-              <>
-                <line x1={e.x1} y1={e.y1} x2={e.x1 + nx * len} y2={e.y1 + ny * len} stroke="#111827" strokeWidth={0.25 / k} />
-                <path
-                  d={`M ${e.x2} ${e.y2} A ${len} ${len} 0 0 ${sweep} ${e.x1 + nx * len} ${e.y1 + ny * len}`}
-                  fill="none"
-                  stroke="#111827"
-                  strokeWidth={0.15 / k}
-                  strokeDasharray={`${1 / k} ${0.8 / k}`}
-                />
-              </>
-            )}
-          </g>
-        );
-      }
-      case 'dim':
-        return (
-          <g key={e.id} stroke="#be185d" strokeWidth={0.18 / k} fill="#be185d">
-            <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} />
-            <text x={(e.x1 + e.x2) / 2} y={(e.y1 + e.y2) / 2 - 1 / k} textAnchor="middle" fontSize={2.8 / k} fontFamily="JetBrains Mono, monospace" stroke="none">
-              {e.label || `${(Math.hypot(e.x2 - e.x1, e.y2 - e.y1) * 10).toFixed(0)}`}
-            </text>
-          </g>
-        );
-      case 'text':
-        return (
-          <text key={e.id} x={e.x1} y={e.y1} fontSize={e.fontSize || 14} fontFamily="Inter, sans-serif" fill="#111827">
-            {(e.label || '').split('\n').map((ln, i) => (
-              <tspan key={i} x={e.x1} dy={i === 0 ? 0 : '1.2em'}>{ln}</tspan>
-            ))}
-          </text>
-        );
-      case 'rect':
-        return <rect key={e.id} x={Math.min(e.x1, e.x2)} y={Math.min(e.y1, e.y2)} width={Math.abs(e.x2 - e.x1)} height={Math.abs(e.y2 - e.y1)} fill="none" stroke="#64748b" strokeWidth={0.2 / k} />;
-      case 'circle':
-        return <circle key={e.id} cx={e.x1} cy={e.y1} r={e.radius || 0} fill="none" stroke="#64748b" strokeWidth={0.2 / k} />;
-      case 'furniture':
-        return <rect key={e.id} x={Math.min(e.x1, e.x2)} y={Math.min(e.y1, e.y2)} width={Math.abs(e.x2 - e.x1)} height={Math.abs(e.y2 - e.y1)} fill="none" stroke="#7c3aed" strokeWidth={0.2 / k} />;
-      case 'polygon':
-      case 'polyline':
-      case 'line': {
-        const pts = e.points && e.points.length ? e.points : [{ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }];
-        const d = pts.map((p, i) => `${i ? 'L' : 'M'} ${p.x} ${p.y}`).join(' ') + (e.isClosed ? ' Z' : '');
-        return <path key={e.id} d={d} fill="none" stroke="#64748b" strokeWidth={0.2 / k} />;
-      }
-      default:
-        return null;
-    }
-  };
-
-  const order = ['room', 'furniture', 'rect', 'circle', 'line', 'polygon', 'polyline', 'curve', 'partition', 'wall', 'window', 'door', 'dim', 'text'];
-  const sorted = [...entities].sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
-  return <g>{sorted.map(renderEntity)}</g>;
-};
+export { FORMATS, sheetSize, createSheet };
 
 // ──────────────────────── Contenu d'un cadre de vue ────────────────────────
-
-interface Ctx {
-  levels: CadLevel[];
-  entitiesByLevel: Record<string, CadEntity[]>;
-  isLayerVisible: (layerId: string) => boolean;
-}
-
-const viewSpecOf = (v: LayoutView): ViewSpec =>
-  v.type === 'section'
-    ? { type: 'section', dir: 'S', sectionId: v.id, cutValue: v.pos, flip: v.flip }
-    : { type: 'elevation', dir: v.type === 'elevation' ? v.dir : 'S', sectionId: 'AA', cutValue: 0, flip: false };
-
-const elevBox = (m: ViewModel) => ({
-  x0: m.bounds.minU - 600,
-  x1: m.bounds.maxU + 3200,
-  y0: -(m.bounds.maxZ + 400),
-  y1: -m.bounds.minZ + 900,
-});
 
 /** Boîte englobante du contenu en mm RÉELS (pour choisir l'échelle). */
 const contentBoxMm = (ctx: Ctx, view: LayoutView) => {
@@ -208,37 +34,6 @@ export const fitScale = (ctx: Ctx, view: LayoutView, w: number, h: number) => {
   return SCALES.find(s => bw / s <= w - 6 && bh / s <= h - 6) ?? SCALES[SCALES.length - 1];
 };
 
-const ViewportContent = React.memo(
-  ({ vp, w, h, ctx }: { vp: Pick<LayoutViewport, 'view' | 'scale'>; w: number; h: number; ctx: Ctx }) => {
-    const { view, scale } = vp;
-    if (view.type === 'plan') {
-      const ents = (ctx.entitiesByLevel[view.levelId] || []).filter(e => ctx.isLayerVisible(e.layerId));
-      const bb = planBBox(ents);
-      const k = 10 / scale; // mm papier par px plan
-      const cx = bb ? (bb.minX + bb.maxX) / 2 : 0;
-      const cy = bb ? (bb.minY + bb.maxY) / 2 : 0;
-      return (
-        <g transform={`translate(${w / 2 - cx * k} ${h / 2 - cy * k}) scale(${k})`}>
-          <PlanDrawing entities={ents} k={k} scale={scale} showRoomNames />
-        </g>
-      );
-    }
-    const model = buildViewModel(buildLevelData(ctx.levels, ctx.entitiesByLevel, ctx.isLayerVisible), viewSpecOf(view));
-    const b = elevBox(model);
-    const cu = (b.x0 + b.x1) / 2;
-    const cyy = (b.y0 + b.y1) / 2;
-    const f = 1 / scale;
-    return (
-      <g transform={`translate(${w / 2 - cu * f} ${h / 2 - cyy * f}) scale(${f})`}>
-        <ElevationDrawing model={model} mode={view.type === 'section' ? 'section' : 'elevation'} paper showDims />
-      </g>
-    );
-  },
-  (a, b) =>
-    a.vp.view === b.vp.view && a.vp.scale === b.vp.scale && a.w === b.w && a.h === b.h &&
-    a.ctx.entitiesByLevel === b.ctx.entitiesByLevel && a.ctx.levels === b.ctx.levels
-);
-
 const viewLabel = (v: LayoutView, levels: CadLevel[]) =>
   v.type === 'plan'
     ? `Plan ${levels.find(l => l.id === v.levelId)?.name ?? ''}`
@@ -256,34 +51,50 @@ interface LayoutPanelProps extends Ctx {
   setActiveSheetId: (id: string) => void;
   activeTool: CadTool;
   setActiveTool: (t: CadTool) => void;
+  shapeSubTool: ShapeSubTool;
+  setShapeSubTool: (t: ShapeSubTool) => void;
+  polylineSubTool: PolylineSubTool;
+  setPolylineSubTool: (t: PolylineSubTool) => void;
   onBackToPlan: () => void;
 }
 
-const textBox = (t: LayoutText) => {
-  const lines = t.text.split('\n');
-  const w = Math.max(...lines.map(l => l.length), 1) * t.fontSize * 0.58;
-  const h = lines.length * t.fontSize * 1.2;
-  const x = t.align === 'middle' ? t.x - w / 2 : t.align === 'end' ? t.x - w : t.x;
-  return { x, y: t.y, w, h };
-};
+const SWATCHES = ['#111827', '#ffffff', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0284c7', '#7c3aed', '#64748b'];
+type Draft =
+  | { kind: 'box'; shape: 'rect' | 'ellipse'; x0: number; y0: number; x1: number; y1: number }
+  | { kind: 'poly'; points: Pt[]; smooth: boolean }
+  | { kind: 'free'; points: Pt[] };
 
 export const LayoutPanel: React.FC<LayoutPanelProps> = ({
-  levels, entitiesByLevel, isLayerVisible, activeLevelId, sheets, setSheets, activeSheetId, setActiveSheetId, activeTool, setActiveTool, onBackToPlan,
+  levels, entitiesByLevel, isLayerVisible, activeLevelId, sheets, setSheets, activeSheetId, setActiveSheetId, activeTool, setActiveTool,
+  shapeSubTool, setShapeSubTool, polylineSubTool, setPolylineSubTool, onBackToPlan,
 }) => {
   const sheet = sheets.find(s => s.id === activeSheetId) || sheets[0];
   const { W, H } = sheetSize(sheet);
   const ctx: Ctx = { levels, entitiesByLevel, isLayerVisible };
+  // Personnalisation de la planche (valeurs par défaut si non renseignées)
+  const MARGIN = sheet.margin ?? 10;
+  const frameWidth = sheet.frameWidth ?? 0.7;
+  const showCartouche = sheet.showCartouche ?? sheet.showFrame;
+  const showNorth = sheet.showNorth ?? sheet.showFrame;
+  const paperColor = sheet.paperColor ?? '#ffffff';
+  const gridMm = sheet.gridMm ?? 0.5;
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
-  const [drag, setDrag] = useState<null | { id: string; rect: { x: number; y: number; w: number; h: number } }>(null);
+  const [drag, setDrag] = useState<null | { id: string; patch: Partial<LayoutItem> }>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [cursor, setCursor] = useState<Pt | null>(null);
+  const [polygonMode, setPolygonMode] = useState(false);
+  const [defStyle, setDefStyle] = useState<Pick<LayoutShape, 'stroke' | 'strokeWidth' | 'fill' | 'opacity' | 'dash'>>({
+    stroke: '#111827', strokeWidth: 0.35, fill: 'none', opacity: 1, dash: 'solid',
+  });
   const svgRef = useRef<SVGSVGElement>(null);
 
   const today = new Date().toLocaleDateString('fr-FR');
   const cartW = Math.min(180, W - MARGIN * 2);
 
   const patchSheet = (patch: Partial<LayoutSheet>) => setSheets(prev => prev.map(s => (s.id === sheet.id ? { ...s, ...patch } : s)));
-  const patchItem = (id: string, patch: Partial<LayoutViewport> | Partial<LayoutText>) =>
+  const patchItem = (id: string, patch: Partial<LayoutViewport> | Partial<LayoutText> | Partial<LayoutShape>) =>
     setSheets(prev => prev.map(s => (s.id === sheet.id ? { ...s, items: s.items.map(i => (i.id === id ? ({ ...i, ...patch } as LayoutItem) : i)) } : s)));
   const addItem = (item: LayoutItem) => {
     setSheets(prev => prev.map(s => (s.id === sheet.id ? { ...s, items: [...s.items, item] } : s)));
@@ -293,27 +104,34 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
     setSheets(prev => prev.map(s => (s.id === sheet.id ? { ...s, items: s.items.filter(i => i.id !== id) } : s)));
     setSelectedId(null);
   };
+  /** Ordre d'empilement : +1 = vers le premier plan, −1 = vers l'arrière-plan. */
+  const reorderItem = (id: string, dir: 1 | -1) =>
+    setSheets(prev => prev.map(s => {
+      if (s.id !== sheet.id) return s;
+      const i = s.items.findIndex(x => x.id === id), j = i + dir;
+      if (i < 0 || j < 0 || j >= s.items.length) return s;
+      const items = [...s.items];
+      [items[i], items[j]] = [items[j], items[i]];
+      return { ...s, items };
+    }));
+  const duplicateItem = (it: LayoutItem) => {
+    const c = { ...it, id: newId('it') } as LayoutItem;
+    if (c.kind === 'shape' && c.points) {
+      c.points = c.points.map(p => ({ x: p.x + 5, y: p.y + 5 }));
+    } else {
+      c.x += 5;
+      c.y += 5;
+    }
+    addItem(c);
+  };
 
-  useEffect(() => { setSelectedId(null); }, [activeSheetId]);
-
-  // Suppression au clavier (hors champs de saisie)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
-        e.preventDefault();
-        removeItem(selectedId);
-      }
-      if (e.key === 'Escape') { setSelectedId(null); setActiveTool('select'); }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
+  useEffect(() => { setSelectedId(null); setDraft(null); }, [activeSheetId]);
+  useEffect(() => { if (activeTool !== 'rect' && activeTool !== 'polyline') setDraft(null); }, [activeTool]);
 
   const items = sheet.items;
-  const selected = items.find(i => i.id === selectedId) || null;
-  const rectOf = (i: LayoutItem) => (drag && drag.id === i.id ? drag.rect : i.kind === 'viewport' ? { x: i.x, y: i.y, w: i.w, h: i.h } : textBox(i));
+  const eff = (i: LayoutItem) => (drag && drag.id === i.id ? ({ ...i, ...drag.patch } as LayoutItem) : i);
+  const selectedRaw = items.find(i => i.id === selectedId) || null;
+  const selected = selectedRaw ? eff(selectedRaw) : null;
 
   const toPaper = (e: { clientX: number; clientY: number }) => {
     const svg = svgRef.current!;
@@ -324,21 +142,126 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
     const p = pt.matrixTransform(m.inverse());
     return { x: p.x, y: p.y };
   };
-  const snap = (v: number) => Math.round(v * 2) / 2;
+  const snap = (v: number) => Math.round(v / gridMm) * gridMm;
+  const snapPt = (p: Pt): Pt => ({ x: snap(p.x), y: snap(p.y) });
+
+  const newShape = (partial: Partial<LayoutShape> & Pick<LayoutShape, 'shape'>): LayoutShape => ({
+    kind: 'shape', id: newId('sh'), x: 0, y: 0, w: 0, h: 0, ...defStyle, ...partial,
+  });
+
+  /** Termine une ligne brisée en cours : fermée = polygone. */
+  const finishPoly = (close: boolean) => {
+    if (!draft || draft.kind !== 'poly') return;
+    const pts = draft.points.filter((p, i, a) => i === 0 || Math.hypot(p.x - a[i - 1].x, p.y - a[i - 1].y) > 0.4);
+    setDraft(null);
+    if (pts.length < 2) return;
+    const closed = close && pts.length >= 3;
+    addItem(newShape({ shape: 'polyline', points: pts, closed, smooth: draft.smooth, fill: closed ? defStyle.fill : 'none' }));
+    setActiveTool('select');
+  };
+
+  // Clavier : Suppr, Échap, Entrée (hors champs de saisie)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId && !draft) {
+        e.preventDefault();
+        removeItem(selectedId);
+      }
+      if (e.key === 'Enter' && draft?.kind === 'poly') { e.preventDefault(); finishPoly(polygonMode); }
+      if (e.key === 'Escape') {
+        if (draft) setDraft(null);
+        else { setSelectedId(null); setActiveTool('select'); }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  const onMouseMove = (e: React.MouseEvent) => {
+    if (draft?.kind === 'poly') setCursor(snapPt(toPaper(e)));
+  };
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const p = toPaper(e);
+    const sp = snapPt(p);
     const target = e.target as Element;
 
-    // Outil texte : pose d'un texte
+    // ── Outil texte
     if (activeTool === 'text') {
-      const t: LayoutText = { kind: 'text', id: newId('txt'), x: snap(p.x), y: snap(p.y), text: 'Texte', fontSize: 5, bold: false, align: 'start' };
-      addItem(t);
+      addItem({ kind: 'text', id: newId('txt'), x: sp.x, y: sp.y, text: 'Texte', fontSize: 5, bold: false, align: 'start' });
       setActiveTool('select');
       return;
     }
 
+    // ── Outil forme : rectangle / ellipse (glisser)
+    if (activeTool === 'rect') {
+      const shape = shapeSubTool === 'circle' ? 'ellipse' : 'rect';
+      setDraft({ kind: 'box', shape, x0: sp.x, y0: sp.y, x1: sp.x, y1: sp.y });
+      const onMove = (ev: MouseEvent) => {
+        const q = snapPt(toPaper(ev));
+        setDraft(d => (d && d.kind === 'box' ? { ...d, x1: q.x, y1: q.y } : d));
+      };
+      const onUp = (ev: MouseEvent) => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        const q = snapPt(toPaper(ev));
+        const w = Math.abs(q.x - sp.x), h = Math.abs(q.y - sp.y);
+        setDraft(null);
+        if (w >= 1 && h >= 1) {
+          addItem(newShape({ shape, x: Math.min(sp.x, q.x), y: Math.min(sp.y, q.y), w, h }));
+          setActiveTool('select');
+        }
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      return;
+    }
+
+    // ── Outil tracé : main levée (glisser) ou ligne brisée / polygone / courbe (clics)
+    if (activeTool === 'polyline') {
+      if (polylineSubTool === 'freehand') {
+        setDraft({ kind: 'free', points: [sp] });
+        const onMove = (ev: MouseEvent) => {
+          const q = toPaper(ev);
+          setDraft(d => {
+            if (!d || d.kind !== 'free') return d;
+            const last = d.points[d.points.length - 1];
+            return Math.hypot(q.x - last.x, q.y - last.y) >= 0.8 ? { ...d, points: [...d.points, { x: q.x, y: q.y }] } : d;
+          });
+        };
+        const onUp = () => {
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          setDraft(d => {
+            if (d && d.kind === 'free' && d.points.length >= 2) {
+              addItem(newShape({ shape: 'polyline', points: d.points, smooth: true, fill: 'none' }));
+              setActiveTool('select');
+            }
+            return null;
+          });
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        return;
+      }
+      if (draft?.kind === 'poly') {
+        const first = draft.points[0];
+        if (draft.points.length >= 3 && Math.hypot(sp.x - first.x, sp.y - first.y) < 2.5) {
+          finishPoly(true); // clic sur le premier point : on ferme
+          return;
+        }
+        setDraft({ ...draft, points: [...draft.points, sp] });
+      } else {
+        setDraft({ kind: 'poly', points: [sp], smooth: polylineSubTool === 'curve' });
+        setCursor(sp);
+      }
+      return;
+    }
+
+    // ── Sélection / déplacement / redimensionnement / sommets
     const handle = target.closest('[data-handle]');
     const hit = target.closest('[data-item-id]');
     if (!hit) { setSelectedId(null); return; }
@@ -346,27 +269,32 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
     const item = items.find(i => i.id === id);
     if (!item) return;
     setSelectedId(id);
-    const start = rectOf(item);
-    const mode = handle ? 'resize' : 'move';
+    const hv = handle?.getAttribute('data-handle') || '';
+    const mode: 'move' | 'resize' | 'vertex' = hv === 'se' ? 'resize' : hv.startsWith('v') ? 'vertex' : 'move';
+    const vIdx = hv.startsWith('v') ? Number(hv.slice(1)) : -1;
+    const minW = item.kind === 'viewport' ? 20 : 1, minH = item.kind === 'viewport' ? 15 : 1;
+
+    const patchFor = (dx: number, dy: number): Partial<LayoutItem> => {
+      if (mode === 'resize' && item.kind !== 'text') return { w: Math.max(minW, snap(item.w + dx)), h: Math.max(minH, snap(item.h + dy)) } as Partial<LayoutItem>;
+      if (mode === 'vertex' && item.kind === 'shape' && item.points) {
+        return { points: item.points.map((pt, i) => (i === vIdx ? { x: snap(pt.x + dx), y: snap(pt.y + dy) } : pt)) } as Partial<LayoutItem>;
+      }
+      if (item.kind === 'shape' && item.shape === 'polyline' && item.points) {
+        return { points: item.points.map(pt => ({ x: snap(pt.x + dx), y: snap(pt.y + dy) })) } as Partial<LayoutItem>;
+      }
+      return { x: snap(item.x + dx), y: snap(item.y + dy) } as Partial<LayoutItem>;
+    };
+
     const onMove = (ev: MouseEvent) => {
       const q = toPaper(ev);
-      const dx = q.x - p.x, dy = q.y - p.y;
-      if (mode === 'move') setDrag({ id, rect: { ...start, x: snap(start.x + dx), y: snap(start.y + dy) } });
-      else setDrag({ id, rect: { ...start, w: Math.max(20, snap(start.w + dx)), h: Math.max(15, snap(start.h + dy)) } });
+      setDrag({ id, patch: patchFor(q.x - p.x, q.y - p.y) });
     };
     const onUp = (ev: MouseEvent) => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       const q = toPaper(ev);
       const dx = q.x - p.x, dy = q.y - p.y;
-      if (Math.abs(dx) + Math.abs(dy) > 0.2) {
-        if (item.kind === 'viewport') {
-          if (mode === 'move') patchItem(id, { x: snap(start.x + dx), y: snap(start.y + dy) });
-          else patchItem(id, { w: Math.max(20, snap(start.w + dx)), h: Math.max(15, snap(start.h + dy)) });
-        } else {
-          patchItem(id, { x: snap(item.x + dx), y: snap(item.y + dy) });
-        }
-      }
+      if (Math.abs(dx) + Math.abs(dy) > 0.2) patchItem(id, patchFor(dx, dy) as Partial<LayoutShape>);
       setDrag(null);
     };
     window.addEventListener('mousemove', onMove);
@@ -374,6 +302,7 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
   };
 
   const onDoubleClick = (e: React.MouseEvent) => {
+    if (draft?.kind === 'poly') { finishPoly(polygonMode); return; }
     const hit = (e.target as Element).closest('[data-item-id]');
     if (!hit) return;
     const item = items.find(i => i.id === hit.getAttribute('data-item-id'));
@@ -420,6 +349,43 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
 
   const numField = (value: number, onChange: (v: number) => void, step = 1) => (
     <input type="number" step={step} value={Number.isFinite(value) ? value : 0} onChange={e => onChange(Number(e.target.value))} className={field} />
+  );
+
+  /** Contrôles de style (trait, remplissage, opacité, pointillé) partagés par les formes et le style par défaut. */
+  type ShapeStyle = Pick<LayoutShape, 'stroke' | 'strokeWidth' | 'fill' | 'opacity' | 'dash'>;
+  const styleControls = (st: ShapeStyle, onChange: (patch: Partial<ShapeStyle>) => void) => (
+    <div className="flex flex-col gap-2">
+      <label className={lbl}>
+        Trait
+        <div className="flex items-center gap-1 flex-wrap">
+          {SWATCHES.map(c => (
+            <button key={c} onClick={() => onChange({ stroke: c })} className={`w-4 h-4 rounded border ${st.stroke === c ? 'border-primary ring-1 ring-primary' : 'border-outline-variant/40'}`} style={{ background: c }} title={c} />
+          ))}
+          <input type="color" value={st.stroke} onChange={e => onChange({ stroke: e.target.value })} className="w-6 h-6 bg-transparent cursor-pointer" />
+        </div>
+      </label>
+      <div className="grid grid-cols-2 gap-2">
+        <label className={lbl}>Épaisseur (mm){numField(st.strokeWidth, v => onChange({ strokeWidth: Math.min(5, Math.max(0.05, v)) }), 0.05)}</label>
+        <label className={lbl}>
+          Style de trait
+          <select value={st.dash} onChange={e => onChange({ dash: e.target.value as ShapeStyle['dash'] })} className={field}>
+            <option value="solid">Continu</option>
+            <option value="dashed">Tirets</option>
+            <option value="dotted">Pointillés</option>
+          </select>
+        </label>
+      </div>
+      <div className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={st.fill !== 'none'} onChange={e => onChange({ fill: e.target.checked ? '#cbd5e1' : 'none' })} className="accent-[#4cd7f6]" /> Remplissage
+        </label>
+        {st.fill !== 'none' && <input type="color" value={st.fill} onChange={e => onChange({ fill: e.target.value })} className="w-6 h-6 bg-transparent cursor-pointer" />}
+      </div>
+      <label className={lbl}>
+        Opacité : {Math.round(st.opacity * 100)} %
+        <input type="range" min={0.1} max={1} step={0.05} value={st.opacity} onChange={e => onChange({ opacity: Number(e.target.value) })} className="w-full accent-[#4cd7f6]" />
+      </label>
+    </div>
   );
 
   return (
@@ -489,13 +455,42 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
               <span className="material-symbols-outlined text-[14px]">content_cut</span> Coupe BB
             </button>
           </div>
-          <button
-            onClick={() => setActiveTool(activeTool === 'text' ? 'select' : 'text')}
-            className={`${btn} ${activeTool === 'text' ? '!bg-primary/20 !text-primary !border-primary/50' : ''}`}
-          >
-            <span className="material-symbols-outlined text-[14px]">title</span>
-            {activeTool === 'text' ? 'Cliquez sur la planche…' : 'Ajouter un texte (T)'}
-          </button>
+          <div className="font-mono text-[10px] text-outline mt-1">OUTILS DE DESSIN</div>
+          <div className="grid grid-cols-4 gap-1">
+            {([
+              { label: 'Sélection', icon: 'near_me', on: activeTool === 'select', go: () => setActiveTool('select') },
+              { label: 'Texte (T)', icon: 'title', on: activeTool === 'text', go: () => setActiveTool(activeTool === 'text' ? 'select' : 'text') },
+              { label: 'Rectangle (R)', icon: 'rectangle', on: activeTool === 'rect' && shapeSubTool === 'rect', go: () => { setShapeSubTool('rect'); setActiveTool('rect'); } },
+              { label: 'Ellipse', icon: 'circle', on: activeTool === 'rect' && shapeSubTool === 'circle', go: () => { setShapeSubTool('circle'); setActiveTool('rect'); } },
+              { label: 'Ligne brisée (L)', icon: 'polyline', on: activeTool === 'polyline' && polylineSubTool === 'straight' && !polygonMode, go: () => { setPolylineSubTool('straight'); setPolygonMode(false); setActiveTool('polyline'); } },
+              { label: 'Polygone', icon: 'pentagon', on: activeTool === 'polyline' && polylineSubTool === 'straight' && polygonMode, go: () => { setPolylineSubTool('straight'); setPolygonMode(true); setActiveTool('polyline'); } },
+              { label: 'Courbe', icon: 'gesture_select', on: activeTool === 'polyline' && polylineSubTool === 'curve', go: () => { setPolylineSubTool('curve'); setPolygonMode(false); setActiveTool('polyline'); } },
+              { label: 'Main levée', icon: 'gesture', on: activeTool === 'polyline' && polylineSubTool === 'freehand', go: () => { setPolylineSubTool('freehand'); setActiveTool('polyline'); } },
+            ]).map(t => (
+              <button
+                key={t.label}
+                onClick={t.go}
+                title={t.label}
+                className={`${btn} !px-0 !py-2 ${t.on ? '!bg-primary/20 !text-primary !border-primary/50' : ''}`}
+              >
+                <span className="material-symbols-outlined text-[18px]">{t.icon}</span>
+              </button>
+            ))}
+          </div>
+          <p className="font-mono text-[9px] text-outline leading-snug">
+            {activeTool === 'rect' ? 'Glissez sur la planche pour tracer la forme.'
+              : activeTool === 'polyline' && polylineSubTool === 'freehand' ? 'Maintenez et dessinez à main levée.'
+              : activeTool === 'polyline' ? 'Cliquez les sommets ; double-clic ou Entrée pour terminer, clic sur le 1er point pour fermer. Échap annule.'
+              : activeTool === 'text' ? 'Cliquez sur la planche pour poser le texte.'
+              : 'Choisissez un outil pour dessiner sur la planche.'}
+          </p>
+
+          {(activeTool === 'rect' || activeTool === 'polyline') && (
+            <div className="flex flex-col gap-1 border border-outline-variant/20 rounded p-2">
+              <div className="font-mono text-[10px] text-outline">STYLE DES NOUVELLES FORMES</div>
+              {styleControls(defStyle, patch => setDefStyle(s => ({ ...s, ...patch })))}
+            </div>
+          )}
         </div>
 
         {/* Propriétés de l'élément sélectionné */}
@@ -635,13 +630,71 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
                 </div>
               </div>
             </div>
-            <label className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer">
-              <input type="checkbox" checked={selected.bold} onChange={e => patchItem(selected.id, { bold: e.target.checked })} className="accent-[#4cd7f6]" /> Gras
-            </label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer">
+                <input type="checkbox" checked={selected.bold} onChange={e => patchItem(selected.id, { bold: e.target.checked })} className="accent-[#4cd7f6]" /> Gras
+              </label>
+              <label className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer">
+                <input type="checkbox" checked={!!selected.italic} onChange={e => patchItem(selected.id, { italic: e.target.checked })} className="accent-[#4cd7f6]" /> Italique
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className={lbl}>
+                Police
+                <select value={selected.fontFamily || 'sans'} onChange={e => patchItem(selected.id, { fontFamily: e.target.value as LayoutText['fontFamily'] })} className={field}>
+                  <option value="sans">Inter</option>
+                  <option value="mono">JetBrains Mono</option>
+                  <option value="serif">Serif</option>
+                </select>
+              </label>
+              <label className={lbl}>
+                Couleur
+                <div className="flex items-center gap-1">
+                  <input type="color" value={selected.color || '#111827'} onChange={e => patchItem(selected.id, { color: e.target.value })} className="w-8 h-7 bg-transparent cursor-pointer" />
+                  <button onClick={() => patchItem(selected.id, { color: undefined })} className={btn} title="Noir par défaut">↺</button>
+                </div>
+              </label>
+            </div>
             <div className="grid grid-cols-2 gap-1">
               <label className={lbl}>X{numField(selected.x, v => patchItem(selected.id, { x: v }), 0.5)}</label>
               <label className={lbl}>Y{numField(selected.y, v => patchItem(selected.id, { y: v }), 0.5)}</label>
             </div>
+          </div>
+        )}
+
+        {selected && selected.kind === 'shape' && (
+          <div className="flex flex-col gap-2 border-t border-outline-variant/20 pt-2">
+            <div className="font-mono text-[10px] text-primary font-bold flex items-center justify-between">
+              {selected.shape === 'rect' ? 'RECTANGLE' : selected.shape === 'ellipse' ? 'ELLIPSE' : selected.closed ? 'POLYGONE' : selected.smooth ? 'COURBE' : 'LIGNE BRISÉE'}
+              <span className="flex gap-1">
+                <button onClick={() => reorderItem(selected.id, 1)} className="material-symbols-outlined text-[16px] text-outline hover:text-primary" title="Avancer d'un plan">flip_to_front</button>
+                <button onClick={() => reorderItem(selected.id, -1)} className="material-symbols-outlined text-[16px] text-outline hover:text-primary" title="Reculer d'un plan">flip_to_back</button>
+                <button onClick={() => duplicateItem(selected)} className="material-symbols-outlined text-[15px] text-outline hover:text-primary" title="Dupliquer">content_copy</button>
+                <button onClick={() => removeItem(selected.id)} className="material-symbols-outlined text-[16px] text-outline hover:text-error" title="Supprimer (Suppr)">delete</button>
+              </span>
+            </div>
+            {styleControls(selected, patch => patchItem(selected.id, patch))}
+            {selected.shape === 'rect' && (
+              <label className={lbl}>Coins arrondis (mm){numField(selected.radius ?? 0, v => patchItem(selected.id, { radius: Math.max(0, v) }), 0.5)}</label>
+            )}
+            {selected.shape === 'polyline' && (
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer">
+                  <input type="checkbox" checked={!!selected.closed} onChange={e => patchItem(selected.id, { closed: e.target.checked })} className="accent-[#4cd7f6]" /> Fermée
+                </label>
+                <label className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer">
+                  <input type="checkbox" checked={!!selected.smooth} onChange={e => patchItem(selected.id, { smooth: e.target.checked })} className="accent-[#4cd7f6]" /> Lissée
+                </label>
+              </div>
+            )}
+            {selected.shape !== 'polyline' && (
+              <div className="grid grid-cols-4 gap-1">
+                <label className={lbl}>X{numField(selected.x, v => patchItem(selected.id, { x: v }), 0.5)}</label>
+                <label className={lbl}>Y{numField(selected.y, v => patchItem(selected.id, { y: v }), 0.5)}</label>
+                <label className={lbl}>L{numField(selected.w, v => patchItem(selected.id, { w: Math.max(1, v) }), 0.5)}</label>
+                <label className={lbl}>H{numField(selected.h, v => patchItem(selected.id, { h: Math.max(1, v) }), 0.5)}</label>
+              </div>
+            )}
           </div>
         )}
 
@@ -670,8 +723,46 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
           <input value={sheet.author} onChange={e => patchSheet({ author: e.target.value })} placeholder="Dessinateur / Architecte" className={field} />
           <input value={sheet.sheetNo} onChange={e => patchSheet({ sheetNo: e.target.value })} placeholder="N° de planche" className={field} />
           <label className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer">
-            <input type="checkbox" checked={sheet.showFrame} onChange={e => patchSheet({ showFrame: e.target.checked })} className="accent-[#4cd7f6]" /> Cadre &amp; cartouche
+            <input type="checkbox" checked={sheet.showFrame} onChange={e => patchSheet({ showFrame: e.target.checked })} className="accent-[#4cd7f6]" /> Cadre
           </label>
+          <label className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer">
+            <input type="checkbox" checked={showCartouche} onChange={e => patchSheet({ showCartouche: e.target.checked })} className="accent-[#4cd7f6]" /> Cartouche
+          </label>
+          <label className="flex items-center gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer">
+            <input type="checkbox" checked={showNorth} onChange={e => patchSheet({ showNorth: e.target.checked })} className="accent-[#4cd7f6]" /> Flèche Nord
+          </label>
+
+          <div className="font-mono text-[10px] text-outline mt-1">PERSONNALISATION</div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className={lbl}>Marge (mm){numField(MARGIN, v => patchSheet({ margin: Math.min(30, Math.max(0, v)) }), 1)}</label>
+            <label className={lbl}>Épaisseur cadre (mm){numField(frameWidth, v => patchSheet({ frameWidth: Math.min(3, Math.max(0.1, v)) }), 0.1)}</label>
+          </div>
+          <label className={lbl}>
+            Couleur du papier
+            <div className="flex items-center gap-1">
+              {['#ffffff', '#fffbeb', '#f1f5f9', '#ecfeff', '#f0fdf4'].map(c => (
+                <button
+                  key={c}
+                  onClick={() => patchSheet({ paperColor: c })}
+                  className={`w-5 h-5 rounded border ${paperColor === c ? 'border-primary ring-1 ring-primary' : 'border-outline-variant/40'}`}
+                  style={{ background: c }}
+                  title={c}
+                />
+              ))}
+              <input type="color" value={paperColor} onChange={e => patchSheet({ paperColor: e.target.value })} className="w-6 h-6 bg-transparent cursor-pointer" />
+            </div>
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className={lbl}>
+              Accrochage (mm)
+              <select value={gridMm} onChange={e => patchSheet({ gridMm: Number(e.target.value) })} className={field}>
+                {[0.5, 1, 2, 5, 10].map(g => <option key={g} value={g}>{g} mm</option>)}
+              </select>
+            </label>
+            <label className="flex items-end gap-2 font-mono text-[10px] text-on-surface-variant cursor-pointer pb-1">
+              <input type="checkbox" checked={!!sheet.showGrid} onChange={e => patchSheet({ showGrid: e.target.checked })} className="accent-[#4cd7f6]" /> Grille visible
+            </label>
+          </div>
         </div>
 
         <div className="mt-auto flex flex-col gap-2">
@@ -693,92 +784,69 @@ export const LayoutPanel: React.FC<LayoutPanelProps> = ({
           <button onClick={() => setZoom(z => Math.min(3, z * 1.25))} className="px-2 text-on-surface-variant hover:text-primary font-mono">+</button>
         </div>
 
-        <svg
+        <SheetSvg
           ref={svgRef}
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox={`0 0 ${W} ${H}`}
-          style={{ width: `${zoom * 100}%`, maxWidth: zoom * 1100, aspectRatio: `${W} / ${H}`, cursor: activeTool === 'text' ? 'text' : 'default' }}
-          className="mx-auto bg-white shadow-2xl block"
+          sheet={sheet}
+          ctx={ctx}
+          eff={eff}
+          style={{ width: `${zoom * 100}%`, maxWidth: zoom * 1100, aspectRatio: `${W} / ${H}`, cursor: activeTool === 'text' ? 'text' : activeTool === 'rect' || activeTool === 'polyline' ? 'crosshair' : 'default' }}
+          className="mx-auto shadow-2xl block"
           onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
           onDoubleClick={onDoubleClick}
-        >
-          <rect x={0} y={0} width={W} height={H} fill="#ffffff" />
-          {sheet.showFrame && <rect x={MARGIN} y={MARGIN} width={W - MARGIN * 2} height={H - MARGIN * 2} fill="none" stroke="#111827" strokeWidth={0.7} />}
-
-          {items.map(it => {
-            const r = rectOf(it);
-            if (it.kind === 'viewport') {
-              return (
-                <g key={it.id} data-item-id={it.id}>
-                  <rect x={r.x} y={r.y} width={r.w} height={r.h} fill="#ffffff" />
-                  <svg x={r.x} y={r.y} width={r.w} height={r.h} viewBox={`0 0 ${r.w} ${r.h}`} overflow="hidden" style={{ pointerEvents: 'none' }}>
-                    <ViewportContent vp={it} w={r.w} h={r.h} ctx={ctx} />
-                  </svg>
-                  {it.frame && <rect x={r.x} y={r.y} width={r.w} height={r.h} fill="none" stroke="#111827" strokeWidth={0.25} style={{ pointerEvents: 'none' }} />}
-                  {it.showTitle && (
-                    <text x={r.x + r.w / 2} y={r.y + r.h + 5} textAnchor="middle" fontSize={4} fontWeight="bold" fontFamily="JetBrains Mono, monospace" fill="#111827" style={{ pointerEvents: 'none' }}>
-                      {it.title}  —  1:{it.scale}
-                    </text>
-                  )}
-                  {/* zone de saisie du cadre entier (le contenu imbriqué ignore la souris) */}
-                  <rect x={r.x} y={r.y} width={r.w} height={r.h} fill="transparent" />
-                </g>
-              );
-            }
-            return (
-              <g key={it.id} data-item-id={it.id}>
-                <rect x={r.x} y={r.y} width={r.w} height={r.h} fill="transparent" />
-                <text x={it.x} y={it.y + it.fontSize} textAnchor={it.align} fontSize={it.fontSize} fontWeight={it.bold ? 'bold' : 'normal'} fontFamily="Inter, sans-serif" fill="#111827" style={{ pointerEvents: 'none' }}>
-                  {it.text.split('\n').map((ln, i) => (
-                    <tspan key={i} x={it.x} dy={i === 0 ? 0 : '1.2em'}>{ln}</tspan>
-                  ))}
-                </text>
-              </g>
-            );
-          })}
+          underlay={sheet.showGrid && (
+            <g data-ui="1" style={{ pointerEvents: 'none' }}>
+              <defs>
+                <pattern id="layout-grid" width={Math.max(gridMm, 1)} height={Math.max(gridMm, 1)} patternUnits="userSpaceOnUse">
+                  <circle cx={0} cy={0} r={0.12} fill="#94a3b8" />
+                </pattern>
+              </defs>
+              <rect x={0} y={0} width={W} height={H} fill="url(#layout-grid)" />
+            </g>
+          )}
+          overlay={
+            <>
+          {/* Tracé en cours (non imprimé) */}
+          {draft && (
+            <g data-ui="1" style={{ pointerEvents: 'none' }} fill="none" stroke="#2563eb" strokeWidth={0.35} strokeDasharray="2 1.2">
+              {draft.kind === 'box' && (draft.shape === 'rect'
+                ? <rect x={Math.min(draft.x0, draft.x1)} y={Math.min(draft.y0, draft.y1)} width={Math.abs(draft.x1 - draft.x0)} height={Math.abs(draft.y1 - draft.y0)} />
+                : <ellipse cx={(draft.x0 + draft.x1) / 2} cy={(draft.y0 + draft.y1) / 2} rx={Math.abs(draft.x1 - draft.x0) / 2} ry={Math.abs(draft.y1 - draft.y0) / 2} />)}
+              {draft.kind === 'poly' && (
+                <>
+                  <path d={polyPath(cursor ? [...draft.points, cursor] : draft.points, draft.smooth, false)} />
+                  {draft.points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={i === 0 && draft.points.length >= 3 ? 1.6 : 0.8} fill="#2563eb" stroke="none" />)}
+                </>
+              )}
+              {draft.kind === 'free' && <path d={polyPath(draft.points, true, false)} />}
+            </g>
+          )}
 
           {/* Sélection (non imprimée) */}
           {selected && (() => {
-            const r = rectOf(selected);
+            const r = itemBox(selected);
             return (
               <g data-ui="1">
                 <rect x={r.x} y={r.y} width={r.w} height={r.h} fill="none" stroke="#2563eb" strokeWidth={0.4} strokeDasharray="2 1.2" style={{ pointerEvents: 'none' }} />
-                {selected.kind === 'viewport' && (
+                {(selected.kind === 'viewport' || (selected.kind === 'shape' && selected.shape !== 'polyline')) && (
                   <g data-item-id={selected.id}>
                     <rect data-handle="se" x={r.x + r.w - 2} y={r.y + r.h - 2} width={4} height={4} fill="#2563eb" stroke="#ffffff" strokeWidth={0.4} style={{ cursor: 'nwse-resize' }} />
+                  </g>
+                )}
+                {selected.kind === 'shape' && selected.shape === 'polyline' && (
+                  <g data-item-id={selected.id}>
+                    {(selected.points || []).map((p, i) => (
+                      <rect key={i} data-handle={`v${i}`} x={p.x - 1.4} y={p.y - 1.4} width={2.8} height={2.8} fill="#ffffff" stroke="#2563eb" strokeWidth={0.4} style={{ cursor: 'move' }} />
+                    ))}
                   </g>
                 )}
               </g>
             );
           })()}
 
-          {sheet.showFrame && (
-            <g fontFamily="JetBrains Mono, monospace" stroke="#111827" strokeWidth={0.4} fill="#111827" style={{ pointerEvents: 'none' }}>
-              <g transform={`translate(${W - MARGIN - cartW} ${H - MARGIN - CART_H})`}>
-                <rect width={cartW} height={CART_H} fill="#ffffff" />
-                <line x1={0} y1={CART_H * 0.5} x2={cartW} y2={CART_H * 0.5} />
-                <line x1={cartW * 0.62} y1={0} x2={cartW * 0.62} y2={CART_H} />
-                <line x1={cartW * 0.62} y1={CART_H * 0.5} x2={cartW} y2={CART_H * 0.5} />
-                <g stroke="none">
-                  <text x={3} y={5} fontSize={2.6} fill="#64748b">PROJET</text>
-                  <text x={3} y={13} fontSize={5} fontWeight="bold">{sheet.project}</text>
-                  <text x={3} y={CART_H * 0.5 + 5} fontSize={2.6} fill="#64748b">PLANCHE</text>
-                  <text x={3} y={CART_H * 0.5 + 13} fontSize={4} fontWeight="bold">{sheet.title}</text>
-                  <text x={cartW * 0.62 + 3} y={5} fontSize={2.6} fill="#64748b">FORMAT · DATE</text>
-                  <text x={cartW * 0.62 + 3} y={13} fontSize={4} fontWeight="bold">{sheet.format} · {today}</text>
-                  <text x={cartW * 0.62 + 3} y={CART_H * 0.5 + 5} fontSize={2.6} fill="#64748b">N°</text>
-                  <text x={cartW * 0.62 + 3} y={CART_H * 0.5 + 12} fontSize={4} fontWeight="bold">{sheet.sheetNo}</text>
-                  <text x={cartW * 0.62 + 3} y={CART_H - 2} fontSize={2.4} fill="#64748b">{sheet.author}</text>
-                </g>
-              </g>
-              <g transform={`translate(${W - MARGIN - 18} ${MARGIN + 22})`}>
-                <circle r={7} fill="none" stroke="#111827" strokeWidth={0.3} />
-                <polygon points="0,-6 2.5,3 0,1.5 -2.5,3" />
-                <text y={-9} textAnchor="middle" fontSize={4} fontWeight="bold" stroke="none">N</text>
-              </g>
-            </g>
-          )}
-        </svg>
+            </>
+          }
+        />
       </div>
     </div>
   );

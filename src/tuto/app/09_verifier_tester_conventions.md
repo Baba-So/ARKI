@@ -84,3 +84,5 @@ Outils : onglet *Console* du navigateur, *React DevTools*, et l'inspecteur SVG (
 | Une recette d'extension | le guide correspondant de ce dossier |
 
 ⬅️ [08 — Commandes, raccourcis, exports](./08_commandes_raccourcis_exports.md) | [Index](./README.md)
+
+➡️ Suite : [10 — Blocs : vues, import et prompt IA](./10_blocs_vues_import_et_prompt_ia.md)

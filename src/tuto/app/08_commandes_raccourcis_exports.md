@@ -61,52 +61,16 @@ Puis : afficher la lettre sur le bouton (`key: 'N'` dans le tableau d'outils), e
 
 ## 3. Les exports
 
-### État actuel
-`ExportModal.tsx` affiche le **choix du format** (`dwg`, `dxf`, `ifc`, `pdf`, `svg`) et une progression, mais le téléchargement est **simulé** (`setTimeout`, aucune génération de fichier). La **vraie** sortie papier existe côté mise en page : `printSheet` (`LayoutPanel.tsx`) ouvre une fenêtre d'impression au format de la planche.
+Les exports sont **réels** (projet JSON, SVG, DXF R12, PDF par impression, rapport JSON, métrés CSV) : tout est décrit, avec la recette pour ajouter un format, dans le guide [11 — Projets, tableau de bord et exports](./11_projets_dashboard_et_exports.md).
 
-### Brancher un vrai export (recette)
-1. **Fonction pure** de conversion, dans un module à part (ex. `src/export/toSvg.ts`) :
-   ```ts
-   export function entitiesToSvg(entities: CadEntity[], layers: CadLayer[]): string { … }
-   ```
-   Elle reçoit les données, **renvoie une chaîne**, sans toucher à React (donc testable).
-2. **Déclencher le téléchargement** (Web API) :
-   ```ts
-   const blob = new Blob([content], { type: 'image/svg+xml' });
-   const url = URL.createObjectURL(blob);
-   const a = document.createElement('a');
-   a.href = url; a.download = 'plan.svg'; a.click();
-   URL.revokeObjectURL(url);
-   ```
-3. **Passer les données** à la modale : `ExportModal` ne reçoit aujourd'hui que des callbacks ; ajoutez les props `entitiesByLevel`, `levels`, `layers`.
-4. **Respecter les règles du modèle** :
-   - Échelle : 1 px = 10 mm → multiplier par 10 pour exporter en mm.
-   - **Axe Y inversé** : le plan a Y vers le bas ; DXF/DWG ont Y vers le haut (`y_dxf = −y`).
-   - Murs : exporter les **polygones raccordés** de `computeWallPolygons` (`wallGeometry.ts`) plutôt que de simples segments.
-   - Niveaux : décider d'exporter le niveau actif ou tous (un fichier/une couche par niveau).
-   - Calques : respecter `visible`, convertir `color` et `lineweight`.
-5. Remplacer la simulation (`setTimeout`) par l'appel réel + gestion d'erreur.
-
-### Format DXF minimal (repère)
-```
-0\nSECTION\n2\nENTITIES\n
-0\nLINE\n8\nNOM_CALQUE\n10\nx1\n20\ny1\n11\nx2\n21\ny2\n
-0\nENDSEC\n0\nEOF
-```
-(`8` = calque, `10/20` = point de départ, `11/21` = point d'arrivée.)
-
----
+Rappels communs à tout export : échelle 1 px = 10 mm ; DXF/DWG ont l'axe **Y inversé** ; respecter les calques visibles et les niveaux ; exporter les polygones de murs raccordés (`computeWallPolygons`) plutôt que de simples segments.
 
 ## ⚠️ Pièges classiques
 - **Commande CLI qui duplique la logique du bouton** : elles divergent à la première évolution.
 - **Raccourci actif dans la mise en page** : la garde `activeRail !== 'plan'` doit rester en tête de handler.
-- **Export en px au lieu de mm**, ou avec Y non inversé.
-- **Blob jamais révoqué** (`URL.revokeObjectURL`) → fuite mémoire.
+- **Export en px au lieu de mm**, ou avec Y non inversé (voir guide 11).
 
 ## ✍️ Exercice
-Implémentez l'export **JSON métrique** : nombre de murs, longueur totale (m), surface des pièces, nombre de portes/fenêtres par niveau (réutilisez `analyzePlanMetrics` dans `src/agent.ts`), téléchargé via un `Blob`.
-<details><summary>Indice</summary>
-`analyzePlanMetrics(entities)` ne traite qu'un niveau : appelez-la pour chaque entrée de `entitiesByLevel` et agrégez ; ajoutez la commande CLI `_METRICS` qui déclenche le téléchargement.
-</details>
+Ajoutez la commande CLI `_EXPORT DXF` qui ouvre la fenêtre d'export déjà positionnée sur le format DXF (indice : un état `initialFormat` passé à `ExportModal`, et la branche correspondante dans `handleCliSubmit`).
 
 ⬅️ [07 — Calques, matériaux, bibliothèque](./07_calques_materiaux_bibliotheque.md) | [Index](./README.md) | [09 — Vérifier, tester, conventions ➡️](./09_verifier_tester_conventions.md)

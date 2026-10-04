@@ -178,6 +178,18 @@ Elle trie par altitude croissante, écarte les niveaux masqués, et ne garde que
 - **Pas de lien entre niveaux** : modifier un mur du RDC ne met pas l'étage à jour.
 - **Pas de ré-ordonnancement automatique** : un niveau est ordonné par son altitude ; modifier l'altitude à la main peut produire des chevauchements.
 
+## Configuration des étages (hauteurs, dalles, altitudes automatiques)
+
+Menu **Niveau → « Configurer les étages… »** (`LevelsConfigDialog.tsx`). Le dialogue travaille sur un **brouillon** et n'applique rien avant « Appliquer » :
+
+- **Par niveau** : nom, hauteur sous plafond (`CadLevel.height`), **épaisseur de dalle** sous le plancher (`CadLevel.slabMm`, 200 mm par défaut) et altitude.
+- **Altitudes automatiques** (`restackLevels`, `src/levels.ts`) : `altitude(n) = altitude(n−1) + hauteur(n−1) + dalle(n)` au-dessus du niveau d'ancrage (celui dont l'altitude est la plus proche de 0, le RDC), et symétriquement vers le bas pour les sous-sols. Éditer une altitude à la main (menu des niveaux) désactive ce mode (`levelAutoStack`).
+- **Générateurs** : « Générer R+N » ajoute ou retire des étages en tête ; « Appliquer à tous » uniformise la hauteur.
+- **Hauteur hors tout** (`buildingExtent`) : du dessous de la dalle la plus basse au-dessus de la dalle de toiture.
+- **Mise à jour des murs** : si la case est cochée, les murs et cloisons d'un niveau dont la hauteur change reçoivent la nouvelle hauteur.
+- **Application** (`applyLevelsConfig` dans `CadEditor`) : niveaux supprimés → leurs entités disparaissent (confirmation avec le nombre d'objets perdus) ; ensuite `gotoLevel` répartit à nouveau `entities` / `otherLevels` et remet l'historique à zéro.
+- Les façades et coupes dessinent chaque dalle avec **son** épaisseur, et une dalle de toiture au-dessus du dernier niveau.
+
 ## ⚠️ Pièges classiques
 
 - Lire `entities` en croyant y trouver tous les niveaux.
