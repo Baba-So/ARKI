@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ProjectMeta, ProjectSnapshot } from '../types.ts';
-import { ExportFile, downloadFile, exportDxf, exportMetricsJson, exportPdf, exportProjectJson, exportSchedulesCsv, exportSvg, printSheets } from '../exporters.tsx';
+import { ExportFile, downloadFile, exportDxf, exportMetricsJson, exportPdf, exportPdfVector, exportProjectJson, exportSchedulesCsv, exportSvg, printSheets } from '../exporters.tsx';
 
 type Format = 'json' | 'svg' | 'dxf' | 'pdf' | 'report' | 'csv';
 
@@ -33,6 +33,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, proje
   const [sheetIds, setSheetIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [dpi, setDpi] = useState(200);
+  const [pdfMode, setPdfMode] = useState<'vector' | 'raster'>('vector');
   const [progress, setProgress] = useState('');
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -76,7 +77,18 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, proje
       else if (format === 'dxf') file = exportDxf(snapshot, opts);
       else if (format === 'report') file = exportMetricsJson(snapshot, m.name, opts);
       else if (format === 'csv') file = exportSchedulesCsv(snapshot, m.name, opts);
-      else file = await exportPdf(snapshot, m.name, sheetIds, layerIds, dpi, (d, t) => setProgress(d < t ? `Page ${d + 1} / ${t}…` : ''));
+      else {
+        const prog = (d: number, t: number) => setProgress(d < t ? `Page ${d + 1} / ${t}…` : '');
+        if (pdfMode === 'vector') {
+          try {
+            file = await exportPdfVector(snapshot, m.name, sheetIds, layerIds, prog);
+          } catch (err) {
+            // repli : version image, toujours disponible
+            console.warn('PDF vectoriel indisponible, repli sur la version image', err);
+            file = await exportPdf(snapshot, m.name, sheetIds, layerIds, dpi, prog);
+          }
+        } else file = await exportPdf(snapshot, m.name, sheetIds, layerIds, dpi, prog);
+      }
       downloadFile(file);
       const size = typeof file.content === 'string' ? file.content.length : file.content.length;
       setMessage({ ok: true, text: `Fichier « ${file.filename} » téléchargé (${size > 1048576 ? `${(size / 1048576).toFixed(1)} Mo` : `${Math.max(1, Math.round(size / 1024))} Ko`}).` });
@@ -177,13 +189,21 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, proje
 
           {snapshot && format === 'pdf' && (
             <div className="space-y-1.5">
-              <label className="font-mono text-[10px] text-outline uppercase tracking-wider">Résolution du fichier PDF</label>
+              <label className="font-mono text-[10px] text-outline uppercase tracking-wider">Type de PDF</label>
               <div className="flex gap-2">
-                {[150, 200, 300].map(d => (
-                  <button key={d} onClick={() => setDpi(d)} className={`px-3 py-1.5 rounded border font-mono ${dpi === d ? 'bg-primary/10 border-primary text-primary font-bold' : 'border-outline-variant/30 text-on-surface-variant hover:border-outline'}`}>{d} dpi</button>
+                {([['vector', 'Vectoriel (texte sélectionnable)'], ['raster', 'Image haute résolution']] as const).map(([id, label]) => (
+                  <button key={id} onClick={() => setPdfMode(id)} className={`px-3 py-1.5 rounded border font-mono ${pdfMode === id ? 'bg-primary/10 border-primary text-primary font-bold' : 'border-outline-variant/30 text-on-surface-variant hover:border-outline'}`}>{label}</button>
                 ))}
               </div>
-              <p className="font-mono text-[9px] text-outline">Le PDF contient les planches rendues en image haute résolution (une page par planche, au format papier). Pour un PDF vectoriel, utilisez « Imprimer… » puis « Enregistrer au format PDF ».</p>
+              {pdfMode === 'raster' && (
+                <div className="flex gap-2 items-center">
+                  <span className="font-mono text-[10px] text-outline">Résolution :</span>
+                  {[150, 200, 300].map(d => (
+                    <button key={d} onClick={() => setDpi(d)} className={`px-3 py-1 rounded border font-mono ${dpi === d ? 'bg-primary/10 border-primary text-primary font-bold' : 'border-outline-variant/30 text-on-surface-variant hover:border-outline'}`}>{d} dpi</button>
+                  ))}
+                </div>
+              )}
+              <p className="font-mono text-[9px] text-outline">Une page par planche, au format papier. Si la conversion vectorielle échoue, la version image est générée automatiquement.</p>
             </div>
           )}
 

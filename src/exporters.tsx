@@ -371,6 +371,46 @@ async function svgToCanvas(svgMarkup: string, w: number, h: number): Promise<HTM
 export interface PdfProgress { (done: number, total: number): void }
 
 /**
+ * PDF VECTORIEL : chaque planche est rendue en SVG statique puis convertie en commandes PDF (traits, polygones, textes)
+ * par svg2pdf.js + jsPDF (chargés à la demande). Texte sélectionnable, zoom sans perte, fichier léger.
+ * Les motifs de hachure et les polices web ne sont pas tous reproduits : `exportPdf` bascule sur la version image en cas d'échec.
+ */
+export async function exportPdfVector(snap: ProjectSnapshot, name: string, sheetIds: string[], layerIds: string[], onProgress?: PdfProgress): Promise<ExportFile> {
+  const [{ renderToStaticMarkup }, jspdfMod, svg2pdfMod] = await Promise.all([import('react-dom/server'), import('jspdf'), import('svg2pdf.js')]);
+  const JsPDF = jspdfMod.jsPDF;
+  const svg2pdf = svg2pdfMod.svg2pdf;
+  const sheets = snap.sheets.filter(s => sheetIds.includes(s.id));
+  if (!sheets.length) throw new Error('aucune planche sélectionnée');
+  const visible = new Set(layerIds);
+  const ctx = { levels: snap.levels, entitiesByLevel: snap.entitiesByLevel, isLayerVisible: (id: string) => visible.has(id) };
+
+  // conteneur hors écran : svg2pdf lit les styles calculés, l'élément doit être dans le document
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:-100000px;top:0;width:0;height:0;overflow:hidden';
+  document.body.appendChild(host);
+  let doc: InstanceType<typeof JsPDF> | null = null;
+  try {
+    for (let i = 0; i < sheets.length; i++) {
+      onProgress?.(i, sheets.length);
+      const sheet = sheets[i];
+      const { W, H } = sheetSize(sheet);
+      host.innerHTML = renderToStaticMarkup(<SheetSvg sheet={sheet} ctx={ctx} width={W} height={H} />);
+      const svg = host.querySelector('svg') as SVGSVGElement;
+      const orientation = W >= H ? 'landscape' : 'portrait';
+      if (!doc) doc = new JsPDF({ orientation, unit: 'mm', format: [W, H], compress: true });
+      else doc.addPage([W, H], orientation);
+      await svg2pdf(svg, doc, { x: 0, y: 0, width: W, height: H });
+    }
+  } finally {
+    host.remove();
+  }
+  onProgress?.(sheets.length, sheets.length);
+  doc!.setProperties({ title: `${name} — planches`, creator: 'ARCKI CAD' });
+  const bytes = new Uint8Array(doc!.output('arraybuffer'));
+  return { filename: `${slugify(name)}-planches.pdf`, mime: 'application/pdf', content: bytes };
+}
+
+/**
  * Génère un vrai fichier PDF des planches : une page par planche, à la taille exacte du papier (A4…A0),
  * contenu rendu à la résolution demandée (dpi) puis compressé sans perte (Flate), ou en JPEG si la compression n'est pas disponible.
  * Le rendu est le même que celui de l'écran (mêmes composants SVG que la mise en page).

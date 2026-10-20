@@ -53,7 +53,7 @@ Entièrement piloté par les données : `useProjects()` (hook `useSyncExternalSt
 | **Projet ARCKI** `.arcki.json` | `exportProjectJson` | sauvegarde complète réimportable (inclut les blocs utilisés) |
 | **SVG** | `exportSvg` | un bloc par niveau (le plus haut d'abord), échelle 1:20 → 1:500, largeur réelle en mm sur le papier ; utilise `PlanDrawing` rendu en statique |
 | **DXF** | `exportDxf` | R12 (AC1009) ASCII, mm, **Y inversé**, calques ARCKI (suffixés du niveau s'il y en a plusieurs), **Z = altitude du niveau** ; murs = polylignes fermées issues de `computeWallPolygons` |
-| **PDF** | `exportPdf` (+ `printSheets` en secours) | **vrai fichier `.pdf`** : une page par planche à la taille exacte du papier ; planche rendue en image à 150 / 200 / 300 dpi puis compressée sans perte. « Imprimer… » (`printSheets`) ouvre la fenêtre d'impression pour un PDF **vectoriel** |
+| **PDF** | `exportPdfVector` (défaut), `exportPdf` (image), `printSheets` | **vrai fichier `.pdf`**, une page par planche à la taille exacte du papier. Vectoriel par défaut (texte sélectionnable, zoom sans perte, ≈ 20 Ko) ; version image (150/200/300 dpi) en option et en repli automatique si la conversion échoue |
 | **Rapport** | `exportMetricsJson` | métriques par niveau (`analyzePlanMetrics`) et totaux |
 | **Métrés** | `exportSchedulesCsv` | pièces, murs et cloisons (longueur, surface brute), ouvertures ; `;` + BOM UTF-8 pour Excel |
 
@@ -61,13 +61,11 @@ Options : niveaux (cases), calques inclus (cases, par défaut les calques visibl
 
 **Rendu statique** : SVG et PDF réutilisent les composants React de rendu (`PlanDrawing`, `SheetSvg` dans `sheetRender.tsx`) via `renderToStaticMarkup`, chargé par `import('react-dom/server')` **à la demande** pour ne pas alourdir le chargement initial. C'est ce qui garantit que **l'écran, l'impression et l'export montrent la même chose**.
 
-### Comment fonctionne le PDF (`exportPdf`)
-1. Chaque planche est rendue en SVG statique (`SheetSvg` + `renderToStaticMarkup`) avec des `width`/`height` en **pixels** = taille papier × dpi (résolution plafonnée à ≈ 40 millions de pixels : un A0 est automatiquement ramené vers ~100 dpi).
-2. Le SVG est chargé dans une `Image` (URL de blob) puis dessiné sur un `<canvas>` blanc.
-3. Les pixels RGB sont compressés avec `CompressionStream('deflate')` (zlib = `FlateDecode` du PDF) ; si le navigateur ne l'a pas, repli en JPEG (`DCTDecode`).
-4. `buildPdf` écrit le fichier à la main (PDF 1.4 : catalogue, pages, une image plein cadre par page, table `xref`) — aucune dépendance. Les dimensions de page sont en points (`mm × 72 / 25,4`).
+### Comment fonctionne le PDF
+**Vectoriel (`exportPdfVector`)** : chaque planche est rendue en SVG statique (`SheetSvg` + `renderToStaticMarkup`, en mm), insérée dans un conteneur hors écran (svg2pdf lit les styles calculés) puis convertie en commandes PDF par `svg2pdf.js` dans un document `jsPDF` (une page par planche, `format: [W, H]` en mm). `jspdf` et `svg2pdf.js` sont chargés **à la demande** (`import()`), donc absents du chargement initial.
+Limites : les polices web ne sont pas intégrées (police standard du PDF) et les remplissages par motif (hachures de coupe) ne sont pas tous reproduits (les contours le sont).
 
-Limites : le contenu est **raster** (texte non sélectionnable) ; pour du vectoriel, passer par « Imprimer… ». Les polices sont celles du système (une `Image` SVG ne charge pas de polices web).
+**Image (`exportPdf`)** : planche rendue en SVG avec `width`/`height` en pixels (taille papier × dpi, plafonnée à ≈ 40 millions de pixels), dessinée sur un `<canvas>`, pixels RGB compressés par `CompressionStream('deflate')` (`FlateDecode`) ; `buildPdf` écrit le PDF 1.4 à la main. Utilisé si l'utilisateur le choisit, ou **automatiquement si la conversion vectorielle lève une erreur**.
 
 ### Ajouter un format d'export
 1. Écrire `exportXxx(snapshot, name, options): ExportFile` (`{ filename, mime, content }`) dans `exporters.tsx` — fonction pure, sans état React.
