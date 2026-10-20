@@ -202,10 +202,40 @@ export function buildProjectFile(meta: Pick<ProjectMeta, 'name' | 'phase' | 'cat
   };
 }
 
+export const WORKSPACE_FILE_FORMAT = 'arcki-workspace';
+
+/** Sauvegarde de TOUS les projets (et des blocs importés) dans un seul fichier. */
+export function buildWorkspaceFile() {
+  const projects = getProjects().map(meta => ({ meta, snapshot: loadProject(meta.id) })).filter(p => p.snapshot);
+  return {
+    format: WORKSPACE_FILE_FORMAT,
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    projects: projects.map(p => ({ meta: { name: p.meta.name, phase: p.meta.phase, category: p.meta.category, version: p.meta.version, location: p.meta.location }, snapshot: p.snapshot as ProjectSnapshot })),
+    blocks: getCustomBlocks(),
+  };
+}
+
 /** Importe un fichier projet : valide la structure, ajoute les blocs manquants, crée un nouveau projet. */
 export function importProjectFile(text: string): { ok: true; id: string; name: string } | { ok: false; error: string } {
   let data: ProjectFile;
   try { data = JSON.parse(text) as ProjectFile; } catch { return { ok: false, error: 'Fichier illisible : JSON invalide.' }; }
+  if (data && (data as unknown as { format?: string }).format === WORKSPACE_FILE_FORMAT) {
+    const ws = data as unknown as ReturnType<typeof buildWorkspaceFile>;
+    if (!Array.isArray(ws.projects) || !ws.projects.length) return { ok: false, error: 'Sauvegarde vide : aucun projet trouvé.' };
+    if (Array.isArray(ws.blocks) && ws.blocks.length) {
+      const known = new Set(getAllBlocks().map(b => b.id));
+      const fresh = ws.blocks.filter(b => b && typeof b.id === 'string' && !known.has(b.id));
+      if (fresh.length) addCustomBlocks(fresh);
+    }
+    let n = 0;
+    let last = '';
+    for (const p of ws.projects) {
+      const r = importProjectFile(JSON.stringify({ format: PROJECT_FILE_FORMAT, version: 1, exportedAt: ws.exportedAt, meta: p.meta, snapshot: p.snapshot, blocks: [] }));
+      if (r.ok) { n++; last = r.id; }
+    }
+    return n ? { ok: true, id: last, name: `${n} projet(s) restauré(s)` } : { ok: false, error: 'Aucun projet de la sauvegarde n\'a pu être importé.' };
+  }
   if (!data || data.format !== PROJECT_FILE_FORMAT) return { ok: false, error: 'Ce fichier n\'est pas un projet ARCKI CAD (format attendu : arcki-project).' };
   const s = data.snapshot;
   if (!s || !Array.isArray(s.levels) || !s.levels.length || typeof s.entitiesByLevel !== 'object' || !Array.isArray(s.layers)) {

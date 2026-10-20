@@ -87,6 +87,26 @@ export function computeWallPolygons(walls: CadEntity[]): Record<string, Pt[]> {
       minus: { x: E.x - w.n.x * w.h, y: E.y - w.n.y * w.h },
     };
 
+    // Murs alignés bout à bout (même direction) : l'extrémité est ramenée au milieu du jeu qui les sépare,
+    // pour que les deux corps se rejoignent sans trou ni double trait.
+    const out = end === 0 ? { x: -w.u.x, y: -w.u.y } : w.u; // sens « vers l'extérieur » du mur à cette extrémité
+    for (const o of segs) {
+      if (o.id === w.id || o.type !== w.type) continue;
+      if (Math.abs(cross(w.u.x, w.u.y, o.u.x, o.u.y)) >= MIN_SIN) continue;
+      for (const Eo of [o.a, o.b]) {
+        const dx = Eo.x - E.x, dy = Eo.y - E.y;
+        const lateral = Math.abs(cross(dx, dy, w.u.x, w.u.y));
+        const gap = dx * out.x + dy * out.y; // > 0 : l'extrémité de l'autre mur est au-delà de la nôtre
+        if (lateral <= Math.max(w.h, o.h) * 0.6 + 1 && gap >= -2 && gap <= w.h + o.h + 2) {
+          const M = { x: E.x + dx / 2, y: E.y + dy / 2 };
+          return {
+            plus: { x: M.x + w.n.x * w.h, y: M.y + w.n.y * w.h },
+            minus: { x: M.x - w.n.x * w.h, y: M.y - w.n.y * w.h },
+          };
+        }
+      }
+    }
+
     // Recherche du meilleur raccord
     let best: { o: Seg; X: Pt; to: number; score: number } | null = null;
     for (const o of segs) {

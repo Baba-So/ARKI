@@ -43,7 +43,8 @@ Entièrement piloté par les données : `useProjects()` (hook `useSyncExternalSt
 - **Vignette réelle** : `PlanThumbnail` dessine le plan du niveau le plus bas du projet (murs raccordés, ouvertures, pièces).
 - **Indicateurs** : projets, niveaux et objets, surface des pièces, **espace de stockage** utilisé (`storageUsage`, limite typique de 5 Mo).
 - **Actions par projet** : renommer, dupliquer, exporter (ouvre `ExportModal` sur ce projet), supprimer (ou réinitialiser pour l'exemple).
-- **Import** : un fichier `.arcki.json` (glisser-déposer ou sélection) → `importProjectFile` : validation de la structure, ajout des blocs manquants, **nouveau projet** créé. DXF/DWG/IFC ne sont pas importés (indiqué à l'écran).
+- **Import** : un fichier `.arcki.json` (glisser-déposer ou sélection) → `importProjectFile` : validation de la structure, ajout des blocs manquants, **nouveau projet** créé. Un fichier `.dxf` ASCII est converti en projet par `importDxfAsProject` (`src/dxfImport.ts` : LINE, LWPOLYLINE, POLYLINE, CIRCLE, ARC, TEXT ; unités lues dans `$INSUNITS`, Y inversé, calques DXF rangés par mot-clé dans les 5 calques normalisés). DWG, IFC et DXF binaire ne sont pas pris en charge (indiqué à l'écran).
+- **Sauvegarde complète** : « Tout sauvegarder » télécharge un fichier `arcki-workspace` (tous les projets + blocs importés) ; l'import le restaure en nouveaux projets. C'est la parade à la limite de stockage du navigateur et le moyen de transférer ses projets.
 
 ## 4. Les exports (`exporters.tsx` + `ExportModal.tsx`)
 

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { CadLevel } from '../types.ts';
 
 interface LevelManagerProps {
@@ -21,13 +22,44 @@ export const LevelManager: React.FC<LevelManagerProps> = ({
   levels, activeLevelId, entityCounts, onSelect, onAddAbove, onAddBelow, onDuplicate, onUpdate, onDelete, onOpenConfig,
 }) => {
   const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; right: number; maxH: number }>({ top: 0, right: 8, maxH: 400 });
+
+  // Le panneau est rendu dans <body> (portail) en position fixe : il passe au-dessus du dock, du rail et de tout
+  // empilement parent, et reste entièrement visible (calé sous le bouton, hauteur limitée à l'écran, défilement si besoin).
+  const place = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const top = r.bottom + 4;
+    setPos({ top, right: Math.max(8, window.innerWidth - r.right), maxH: Math.max(160, window.innerHeight - top - 8) });
+  };
+  useLayoutEffect(() => { if (open) place(); }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!popRef.current?.contains(t) && !btnRef.current?.contains(t)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', place);
+    };
+  }, [open]);
   const sorted = [...levels].sort((a, b) => b.elevation - a.elevation);
   const active = levels.find(l => l.id === activeLevelId) || levels[0];
   const input = 'bg-surface-container-low border border-outline-variant/30 rounded px-1.5 py-0.5 font-mono text-[11px] text-on-surface outline-none focus:border-primary/60';
 
   return (
     <div className="relative">
+      {/* Niveau actif */}
       <button
+        ref={btnRef}
         onClick={() => setOpen(o => !o)}
         className={`flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-mono transition-colors ${
           open ? 'border-primary/60 bg-primary/10' : 'border-outline-variant/20 bg-surface-container-low'
@@ -39,8 +71,12 @@ export const LevelManager: React.FC<LevelManagerProps> = ({
         <span className="material-symbols-outlined text-[14px] text-outline">expand_more</span>
       </button>
 
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-[60] w-80 bg-surface-container-lowest border border-outline-variant/40 rounded-lg shadow-2xl p-2 flex flex-col gap-2">
+      {open && createPortal(
+        <div
+          ref={popRef}
+          style={{ position: 'fixed', top: pos.top, right: pos.right, maxHeight: pos.maxH }}
+          className="z-[70] w-80 max-w-[calc(100vw-16px)] overflow-y-auto bg-surface-container-lowest border border-outline-variant/40 rounded-lg shadow-2xl p-2 flex flex-col gap-2"
+        >
           <div className="flex items-center justify-between">
             <span className="font-mono text-[10px] font-bold text-primary tracking-wide">NIVEAUX DU BÂTIMENT</span>
             <button onClick={() => setOpen(false)} className="text-outline hover:text-on-surface">
@@ -48,7 +84,7 @@ export const LevelManager: React.FC<LevelManagerProps> = ({
             </button>
           </div>
 
-          <div className="flex flex-col gap-1 max-h-72 overflow-y-auto">
+          <div className="flex flex-col gap-1">
             {sorted.map(l => {
               const isActive = l.id === activeLevelId;
               return (
@@ -133,7 +169,8 @@ export const LevelManager: React.FC<LevelManagerProps> = ({
           <p className="font-mono text-[9px] text-outline leading-snug">
             Le niveau situé juste en dessous est affiché en fond estompé. Les Vues empilent tous les niveaux.
           </p>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

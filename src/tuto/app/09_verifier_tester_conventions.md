@@ -7,8 +7,9 @@
 | `npm run dev` | Serveur de développement (http://localhost:3000, rechargement à chaud) |
 | `npm run lint` | `tsc --noEmit` : **vérification TypeScript**, la seule vérification automatique du projet |
 | `npm run build` | Build de production (`vite build`) — détecte aussi les erreurs d'import |
+| `npm test` | Tests des modules purs (`src/tests/run.ts`) |
 
-Il n'y a **pas de tests automatisés** : la vérification repose sur `lint` + un **test manuel systématique**.
+`npm test` lance `src/tests/run.ts` (assertions `node:assert` sur les modules purs : murs, niveaux, façades, exports, blocs, import DXF, projets). Ajoutez-y un cas pour toute logique pure nouvelle. Le reste (interface, SVG, DOM) se vérifie par `lint` + un **test manuel systématique**.
 
 ## 2. La check-list de test manuel (à adapter)
 

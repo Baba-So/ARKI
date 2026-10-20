@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { ProjectData, ProjectMeta } from '../types.ts';
-import { deleteProject, duplicateProject, importProjectFile, loadProject, storageUsage, updateProjectMeta, useProjects } from '../projectStore.ts';
+import { buildWorkspaceFile, deleteProject, duplicateProject, importProjectFile, loadProject, storageUsage, updateProjectMeta, useProjects } from '../projectStore.ts';
+import { importDxfAsProject } from '../dxfImport.ts';
+import { downloadFile } from '../exporters.tsx';
 import { useBlocks } from '../blockStore.ts';
 import { PlanThumbnail } from './PlanThumbnail.tsx';
 
@@ -85,13 +87,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenProject, onOpenNewPr
   const handleFiles = async (files: FileList | null) => {
     if (!files || !files.length) return;
     const f = files[0];
-    if (!/\.json$/i.test(f.name)) {
-      setNotice({ ok: false, text: `« ${f.name} » : seuls les fichiers projet ARCKI (.arcki.json) peuvent être importés pour l'instant (DXF / DWG : à venir).` });
+    if (!/\.(json|dxf)$/i.test(f.name)) {
+      setNotice({ ok: false, text: `« ${f.name} » : formats importables : projet ARCKI (.arcki.json), sauvegarde (.json) ou plan DXF ASCII (.dxf). Les DWG et IFC ne sont pas pris en charge.` });
       return;
     }
     if (f.size > 20_000_000) { setNotice({ ok: false, text: 'Fichier trop volumineux (20 Mo max).' }); return; }
-    const res = importProjectFile(await f.text());
-    setNotice(res.ok ? { ok: true, text: `Projet « ${res.name} » importé.` } : { ok: false, text: res.error });
+    const text = await f.text();
+    if (/\.dxf$/i.test(f.name)) {
+      const r = importDxfAsProject(text, f.name);
+      setNotice(r.ok ? { ok: true, text: `Plan « ${r.name} » importé : ${r.summary}.` } : { ok: false, text: r.error });
+      return;
+    }
+    const res = importProjectFile(text);
+    setNotice(res.ok ? { ok: true, text: `« ${res.name} » importé.` } : { ok: false, text: res.error });
   };
 
   const rename = (p: ProjectMeta) => {
@@ -172,6 +180,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenProject, onOpenNewPr
             </select>
             <span className="material-symbols-outlined absolute right-2 top-2.5 text-[15px] text-on-surface-variant pointer-events-none">expand_more</span>
           </div>
+          <button
+            onClick={() => downloadFile({ filename: `arcki-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`, mime: 'application/json', content: JSON.stringify(buildWorkspaceFile()) })}
+            type="button"
+            title="Télécharge tous les projets et blocs importés dans un seul fichier (sauvegarde / transfert vers un autre navigateur)"
+            className="flex items-center gap-2 bg-surface-container-low hover:bg-surface-container-high text-on-surface text-xs font-semibold px-3 py-2 rounded border border-outline-variant/30 transition-colors"
+          >
+            <span className="material-symbols-outlined text-[17px]">backup</span><span className="hidden md:inline">Tout sauvegarder</span>
+          </button>
           <button onClick={onOpenNewProject} type="button"
             className="flex items-center gap-2 bg-primary-container hover:bg-primary text-on-primary-container text-xs font-semibold px-4 py-2 rounded transition-all shadow-md active:scale-95">
             <span className="material-symbols-outlined text-[17px]">add_circle</span><span>Nouveau projet</span>
@@ -200,6 +216,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenProject, onOpenNewPr
           </div>
         </div>
       </div>
+
+      {usagePct > 80 && (
+        <div className="p-3 rounded border border-error bg-error-container/20 text-xs font-mono text-on-surface flex items-center gap-2">
+          <span className="material-symbols-outlined text-error">warning</span>
+          Stockage du navigateur presque plein ({usagePct.toFixed(0)} %) : sauvegardez vos projets (« Tout sauvegarder ») puis supprimez les projets inutiles.
+        </div>
+      )}
 
       {/* Filtres */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
@@ -273,19 +296,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenProject, onOpenNewPr
             className={`bg-surface-container-lowest rounded border border-dashed p-6 shadow-sm flex flex-col items-center justify-center text-center group transition-all min-h-[16rem] ${
               isDragOver ? 'border-primary bg-surface-container-high scale-[1.01]' : 'border-outline-variant/40 hover:bg-surface-container-low'}`}
           >
-            <input type="file" id="projectFileInput" accept=".json,application/json" className="hidden" onChange={e => { handleFiles(e.target.files); e.target.value = ''; }} />
+            <input type="file" id="projectFileInput" accept=".json,.dxf,application/json" className="hidden" onChange={e => { handleFiles(e.target.files); e.target.value = ''; }} />
             <div className="w-12 h-12 rounded bg-surface-container-high group-hover:bg-primary/20 text-primary flex items-center justify-center transition-colors mb-3">
               <span className="material-symbols-outlined text-[28px]">upload_file</span>
             </div>
             <h3 className="text-sm font-semibold text-on-surface">Importer un projet</h3>
             <p className="text-xs text-on-surface-variant mt-1 max-w-xs">
-              Glissez-déposez un fichier <span className="text-primary font-mono font-semibold">.arcki.json</span> exporté depuis ARCKI CAD (niveaux, planches et blocs inclus).
+              Glissez-déposez un projet <span className="text-primary font-mono font-semibold">.arcki.json</span> (niveaux, planches et blocs inclus), une sauvegarde complète ou un plan <span className="text-primary font-mono font-semibold">DXF</span> ASCII.
             </p>
             <button onClick={() => document.getElementById('projectFileInput')?.click()} type="button"
               className="mt-4 px-3 py-1.5 rounded bg-surface-container-high hover:bg-surface-bright text-xs text-on-surface font-semibold transition-colors flex items-center gap-1.5 shadow-sm">
               <span className="material-symbols-outlined text-[16px]">folder_open</span><span>Sélectionner sur le disque</span>
             </button>
-            <span className="font-mono text-[10px] text-outline mt-2">Import DXF / DWG / IFC : non disponible</span>
+            <span className="font-mono text-[10px] text-outline mt-2">DWG / IFC / DXF binaire : non pris en charge</span>
           </div>
         </div>
       ) : (
@@ -311,11 +334,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenProject, onOpenNewPr
             </div>
           ))}
           <div className="border-t border-outline-variant/20 p-3 flex items-center justify-between text-xs text-on-surface-variant">
-            <span className="font-mono text-[11px]">Importer un projet (.arcki.json)</span>
+            <span className="font-mono text-[11px]">Importer un projet (.arcki.json) ou un plan DXF</span>
             <button onClick={() => document.getElementById('projectFileInput')?.click()} className="px-3 py-1.5 rounded bg-surface-container-high hover:bg-surface-bright text-xs font-semibold flex items-center gap-1.5">
               <span className="material-symbols-outlined text-[16px]">folder_open</span>Choisir un fichier
             </button>
-            <input type="file" id="projectFileInput" accept=".json,application/json" className="hidden" onChange={e => { handleFiles(e.target.files); e.target.value = ''; }} />
+            <input type="file" id="projectFileInput" accept=".json,.dxf,application/json" className="hidden" onChange={e => { handleFiles(e.target.files); e.target.value = ''; }} />
           </div>
         </div>
       )}

@@ -241,7 +241,7 @@ export const Header: React.FC<HeaderProps> = ({
       {/* Right Section: Live Sync Status, + Project Button, Notification, Profile */}
       <div className="flex items-center gap-3">
         {/* Sync telemetry badge */}
-        <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded bg-surface-container-low border border-outline-variant/20">
+        <div className="hidden 2xl:flex items-center gap-1.5 px-2 py-1 rounded bg-surface-container-low border border-outline-variant/20">
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-tertiary opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-tertiary"></span>
@@ -259,7 +259,7 @@ export const Header: React.FC<HeaderProps> = ({
           title="Créer un nouveau projet CAD"
         >
           <span className="material-symbols-outlined text-[16px]">add_box</span>
-          <span className="hidden sm:inline">+ Nouveau projet</span>
+          <span className="hidden 2xl:inline">+ Nouveau projet</span>
         </button>
 
         {/* Profile Avatar & Dropdown */}

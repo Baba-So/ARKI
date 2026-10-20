@@ -641,6 +641,41 @@ export const PropertiesSidebar: React.FC<PropertiesSidebarProps> = ({
                     );
                   })}
                 </div>
+
+                {entity.hatchPattern && entity.hatchPattern !== 'none' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="font-mono text-[9px] text-outline flex flex-col gap-1">
+                      Échelle : {(entity.hatchScale ?? 1).toFixed(2)}×
+                      <input
+                        type="range"
+                        min={0.4}
+                        max={3}
+                        step={0.1}
+                        value={entity.hatchScale ?? 1}
+                        onChange={(e) => onUpdate({ hatchScale: Number(e.target.value) })}
+                        className="w-full accent-[#4cd7f6]"
+                      />
+                    </label>
+                    <div className="font-mono text-[9px] text-outline flex flex-col gap-1">
+                      Couleur
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="color"
+                          value={entity.hatchColor || '#94a3b8'}
+                          onChange={(e) => onUpdate({ hatchColor: e.target.value })}
+                          className="w-8 h-6 bg-transparent cursor-pointer"
+                        />
+                        <button
+                          onClick={() => onUpdate({ hatchColor: undefined, hatchScale: 1 })}
+                          className="px-1.5 py-0.5 rounded border border-outline-variant/30 text-[9px] hover:text-primary"
+                          title="Revenir aux valeurs d'origine"
+                        >
+                          ↺ Origine
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

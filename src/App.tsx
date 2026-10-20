@@ -30,6 +30,7 @@ export default function App() {
 
   // État courant de l'éditeur (fourni par CadEditor) et projet ouvert, lisibles depuis les callbacks sans les recréer
   const getSnapshotRef = useRef<(() => ProjectSnapshot) | null>(null);
+  const actionsRef = useRef<{ undo: () => void; redo: () => void; fit: () => void } | null>(null);
   const currentIdRef = useRef(currentProject.id);
   currentIdRef.current = currentProject.id;
 
@@ -86,15 +87,9 @@ export default function App() {
           onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
           projectName={currentProject.name}
           projectVersion={currentProject.version}
-          onResetView={() => {
-            alert("Vue recadrée au centre du plan.");
-          }}
-          onUndo={() => {
-            alert("Annulation de la dernière commande CAO (Ctrl+Z).");
-          }}
-          onRedo={() => {
-            alert("Rétablissement de la commande CAO (Ctrl+Y).");
-          }}
+          onResetView={() => actionsRef.current?.fit()}
+          onUndo={() => actionsRef.current?.undo()}
+          onRedo={() => actionsRef.current?.redo()}
         />
       )}
 
@@ -115,6 +110,8 @@ export default function App() {
             initialProject={editorProject.snapshot}
             onSnapshot={handleSnapshot}
             getSnapshotRef={getSnapshotRef}
+            actionsRef={actionsRef}
+            projectInfo={{ name: currentProject.name, phase: getProjectMeta(currentProject.id)?.phase ?? '' }}
             onOpenNewProject={() => setIsNewProjectModalOpen(true)}
             onOpenExport={() => openExport()}
           />

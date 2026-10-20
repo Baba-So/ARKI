@@ -8,6 +8,7 @@ import { ArckiCadAgent } from '../agent.ts';
 import { ViewsPanel } from './ViewsPanel.tsx';
 import { LayoutPanel, createSheet } from './LayoutPanel.tsx';
 import { LevelManager } from './LevelManager.tsx';
+import { HATCH_KINDS, HatchKind, HatchPatternDef, hatchPatternId } from './HatchPatterns.tsx';
 import { LevelsConfigDialog, LevelsConfigResult } from './LevelsConfigDialog.tsx';
 import { restackLevels } from '../levels.ts';
 import { BlockSvg, blockColor } from './BlockSvg.tsx';
@@ -24,6 +25,10 @@ interface CadEditorProps {
   onSnapshot?: (snapshot: ProjectSnapshot) => void;
   /** Permet à App de lire l'état exact de l'éditeur à la demande (exports). */
   getSnapshotRef?: React.MutableRefObject<(() => ProjectSnapshot) | null>;
+  /** Actions exposées à l'en-tête global (annuler, rétablir, recadrer). */
+  actionsRef?: React.MutableRefObject<{ undo: () => void; redo: () => void; fit: () => void } | null>;
+  /** Nom et phase du projet ouvert (cartouche affiché sur le plan). */
+  projectInfo?: { name: string; phase: string };
 }
 
 export const CadEditor: React.FC<CadEditorProps> = ({
@@ -31,6 +36,8 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   initialProject,
   onSnapshot,
   getSnapshotRef,
+  actionsRef,
+  projectInfo,
 }) => {
   // Navigation active tab in the left rail: 'plan' | 'views' | 'bim' | 'layout' | 'rendu' | 'config'
   const [activeRail, setActiveRail] = useState<'plan' | 'views' | 'bim' | 'layout' | 'rendu' | 'config'>('plan');
@@ -44,7 +51,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   // Désactivation de l'ouverture automatique de la fenêtre des paramètres lors de la sélection (désactivée par défaut selon demande utilisateur)
   const [autoOpenPropsOnSelect, setAutoOpenPropsOnSelect] = useState(false);
   // Visibilité du panneau dock droit (rétractable)
-  const [isRightDockOpen, setIsRightDockOpen] = useState(true);
+  const [isRightDockOpen, setIsRightDockOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1180);
 
   // Active Hatch Pattern for parametric hatch tool
   const [activeHatchPattern, setActiveHatchPattern] = useState<'briques' | 'beton' | 'bois' | 'isolation' | 'carrelage' | 'sable'>('briques');
@@ -105,6 +112,12 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     getSnapshotRef.current = () => snapRef.current;
     return () => { getSnapshotRef.current = null; };
   }, []);
+  // Les actions lisent toujours l'état le plus récent : on rafraîchit la référence à chaque rendu
+  useEffect(() => {
+    if (!actionsRef) return;
+    actionsRef.current = { undo: handleUndo, redo: handleRedo, fit: handleZoomFit };
+  });
+  useEffect(() => () => { if (actionsRef) actionsRef.current = null; }, []);
   const firstRun = useRef(true);
   const dirty = useRef(false);
   useEffect(() => {
@@ -828,8 +841,9 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       }
     }
 
-    // Toujours retourner le mur le plus proche pour garantir l'encastrement strict sur maçonnerie
-    return bestSnap;
+    // Le mur le plus proche n'est retenu que dans la distance demandée (les appels « 9999 » restent illimités :
+    // insertion depuis la bibliothèque, ré-encastrement) ; au-delà, aucun encastrement n'est proposé.
+    return bestSnap && bestSnap.distance <= maxDistance ? bestSnap : null;
   };
 
   // Récupère toutes les ouvertures (portes et fenêtres) encastrées sur un mur ou cloison donné
@@ -2466,6 +2480,13 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         return;
       }
 
+      // Redo (Ctrl+Y)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+
       // Tool keys
       switch (e.key.toLowerCase()) {
         case 'v':
@@ -2615,7 +2636,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       setRightDockTab('props');
       newHist.push('Volet des Propriétés (Longueur, Angle, Matériau) ouvert.');
     } else if (cmd === 'LAYERS' || cmd === 'LA') {
-      setIsSidebarLayersOpen(true);
+      if (isRightDockOpen) setRightDockTab('layers'); else setIsSidebarLayersOpen(true);
       newHist.push('Gestionnaire de calques ouvert dans la sidebar.');
     } else if (cmd === 'DELETE' || cmd === 'DEL' || cmd === 'SUPPR' || cmd === 'ERASE') {
       handleDeleteSelected();
@@ -2683,7 +2704,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
     setAiPrompt('');
 
     try {
-      const result = await ArckiCadAgent.processRequest(userText, entities);
+      const result = await ArckiCadAgent.processRequest(userText, Object.values(entitiesByLevel).flat());
 
       // Si l'utilisateur a demandé d'insérer une porte PMR
       if (userText.toLowerCase().includes('porte') || userText.toLowerCase().includes('pmr')) {
@@ -2791,14 +2812,14 @@ export const CadEditor: React.FC<CadEditorProps> = ({
   return (
     <div className="flex flex-col w-full h-[calc(100vh-3.5rem)] select-none overflow-hidden bg-background font-body-md text-on-surface">
       {/* 1. TOP CONTEXTUAL SUB-TOOLBAR */}
-      <div className="flex-none h-10 bg-surface-container-lowest border-b border-outline-variant/30 px-3 flex items-center justify-between shadow-sm z-30">
-        <div className="flex items-center gap-2 lg:gap-3 flex-wrap overflow-hidden">
+      <div className="flex-none min-h-10 bg-surface-container-lowest border-b border-outline-variant/30 px-3 py-1 flex items-center justify-between gap-x-3 gap-y-1 shadow-sm z-30">
+        <div className="flex items-center gap-x-2 gap-y-1 lg:gap-x-3 flex-wrap min-w-0 flex-1">
           {/* Active Tool Badge */}
           <div className="flex items-center gap-1.5 bg-surface-container-high px-2 py-1 rounded">
             <span className="material-symbols-outlined text-[15px] text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>
               {activeTool === 'select' ? 'near_me' : activeTool === 'measure' ? 'square_foot' : activeTool === 'wall' ? 'view_column' : activeTool === 'door' ? 'meeting_room' : activeTool === 'dim' ? 'straighten' : activeTool === 'partition' ? 'splitscreen' : 'architecture'}
             </span>
-            <span className="font-mono text-[11px] text-primary font-bold tracking-wider uppercase">
+            <span className="hidden lg:inline font-mono text-[11px] text-primary font-bold tracking-wider uppercase">
               {activeTool === 'select' ? 'SÉLECTION [V]' : activeTool === 'measure' ? 'MESURE DISTANCE [M]' : activeTool === 'wall' ? 'MUR [W]' : activeTool === 'partition' ? 'CLOISON [C]' : activeTool === 'door' ? 'PORTE [P]' : activeTool === 'dim' ? 'COTATION [D]' : activeTool.toUpperCase()}
             </span>
           </div>
@@ -2873,7 +2894,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     title={sub.title}
                   >
                     <span className="material-symbols-outlined text-[13px]">{sub.icon}</span>
-                    <span>{sub.label}</span>
+                    <span className="hidden xl:inline">{sub.label}</span>
                   </button>
                 ))}
               </div>
@@ -3222,7 +3243,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     title={sub.desc}
                   >
                     <span className="material-symbols-outlined text-[13px]">{sub.icon}</span>
-                    <span>{sub.label}</span>
+                    <span className="hidden xl:inline">{sub.label}</span>
                   </button>
                 ))}
               </div>
@@ -3247,7 +3268,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             <>
               {/* Polygone Sub-tools Selector */}
               <div className="flex items-center gap-1 bg-surface-container-low p-0.5 rounded border border-outline-variant/30 text-xs">
-                <span className="font-mono text-[9px] text-primary px-1 font-semibold uppercase">SOUS-OUTIL TRACÉ:</span>
+                <span className="hidden 2xl:inline font-mono text-[9px] text-primary px-1 font-semibold uppercase">SOUS-OUTIL TRACÉ:</span>
                 {[
                   { id: 'straight', label: 'Trait / Segments', icon: 'polyline', desc: 'Tracé de traits successifs (L)' },
                   { id: 'freehand', label: 'Libre (Main levée)', icon: 'gesture', desc: 'Tracé libre fluide au glisser' },
@@ -3270,7 +3291,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     title={sub.desc}
                   >
                     <span className="material-symbols-outlined text-[13px]">{sub.icon}</span>
-                    <span>{sub.label}</span>
+                    <span className="hidden xl:inline">{sub.label}</span>
                   </button>
                 ))}
               </div>
@@ -3307,7 +3328,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
             <>
               {/* Wall Sub-tools Selector */}
               <div className="flex items-center gap-1 bg-surface-container-low p-0.5 rounded border border-outline-variant/30 text-xs">
-                <span className="font-mono text-[9px] text-primary px-1 font-semibold uppercase">SOUS-OUTIL MUR:</span>
+                <span className="hidden 2xl:inline font-mono text-[9px] text-primary px-1 font-semibold uppercase">SOUS-OUTIL MUR:</span>
                 {[
                   { id: 'single', label: 'Mur Droit', icon: 'segment', desc: 'Segment droit unique P1 → P2' },
                   { id: 'continuous', label: 'Mur Continu', icon: 'timeline', desc: 'Murs consécutifs en continu (Entrée pour terminer)' },
@@ -3327,7 +3348,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     title={sub.desc}
                   >
                     <span className="material-symbols-outlined text-[13px]">{sub.icon}</span>
-                    <span>{sub.label}</span>
+                    <span className="hidden xl:inline">{sub.label}</span>
                   </button>
                 ))}
               </div>
@@ -3406,8 +3427,8 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
           {/* Quick Layers Button */}
           <button
-            onClick={() => setIsSidebarLayersOpen(!isSidebarLayersOpen)}
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-xs transition-colors border ${
+            onClick={() => (isRightDockOpen ? setRightDockTab(rightDockTab === 'layers' ? 'props' : 'layers') : setIsSidebarLayersOpen(!isSidebarLayersOpen))}
+            className={`hidden xl:flex items-center gap-1.5 px-2 py-0.5 rounded text-xs transition-colors border ${
               isSidebarLayersOpen
                 ? 'bg-primary-container/20 text-primary border-primary/40 font-bold'
                 : 'bg-surface-container-low text-on-surface-variant hover:text-on-surface border-outline-variant/20'
@@ -3420,7 +3441,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         </div>
 
         {/* View Controls & Proj HUD */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-none">
           <LevelManager
             levels={levels}
             activeLevelId={activeLevelId}
@@ -3470,34 +3491,35 @@ export const CadEditor: React.FC<CadEditorProps> = ({
       {/* 2. WORKSPACE MIDDLE: LEFT TOOLBAR + (OPTIONAL SIDEBAR LAYERS DRAWER) + MAIN 2D VIEWPORT + RIGHT INSPECTOR/AI */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Extreme Left CAD Mode Rail */}
-        <aside className="w-14 bg-surface-container-lowest border-r border-outline-variant/30 flex flex-col justify-between py-2 items-center z-40 flex-none">
+        <aside className="w-14 bg-surface-container-lowest border-r border-outline-variant/30 flex flex-col justify-between py-2 items-center z-40 flex-none overflow-y-auto overflow-x-hidden [scrollbar-width:none]">
           <nav className="flex flex-col gap-1 w-full px-1">
             <button
               onClick={() => setActiveRail('plan')}
-              className={`flex flex-col items-center justify-center py-2 px-1 rounded transition-colors ${
+              className={`flex flex-col items-center justify-center py-2 px-1 [@media(max-height:760px)]:py-1.5 rounded transition-colors ${
                 activeRail === 'plan' ? 'bg-surface-container-high text-primary font-semibold' : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
               }`}
               title="Vue Plan 2D"
             >
               <span className="material-symbols-outlined text-[19px]">architecture</span>
-              <span className="font-mono text-[9px] mt-0.5">Plan</span>
+              <span className="font-mono text-[9px] mt-0.5 [@media(max-height:760px)]:hidden">Plan</span>
             </button>
             <button
               onClick={() => setActiveRail('views')}
-              className={`flex flex-col items-center justify-center py-2 px-1 rounded transition-colors ${
+              className={`flex flex-col items-center justify-center py-2 px-1 [@media(max-height:760px)]:py-1.5 rounded transition-colors ${
                 activeRail === 'views' ? 'bg-surface-container-high text-secondary font-semibold' : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
               }`}
               title="Vues : façades et coupes"
             >
               <span className="material-symbols-outlined text-[19px]">view_quilt</span>
-              <span className="font-mono text-[9px] mt-0.5">Vues</span>
+              <span className="font-mono text-[9px] mt-0.5 [@media(max-height:760px)]:hidden">Vues</span>
             </button>
             <button
               onClick={() => {
-                setIsSidebarLayersOpen(!isSidebarLayersOpen);
+                if (isRightDockOpen) setRightDockTab(rightDockTab === 'layers' ? 'props' : 'layers');
+                else setIsSidebarLayersOpen(!isSidebarLayersOpen);
                 setActiveRail('bim');
               }}
-              className={`flex flex-col items-center justify-center py-2 px-1 rounded transition-colors relative ${
+              className={`flex flex-col items-center justify-center py-2 px-1 [@media(max-height:760px)]:py-1.5 rounded transition-colors relative ${
                 isSidebarLayersOpen || activeRail === 'bim'
                   ? 'bg-surface-container-high text-primary font-bold shadow-xs'
                   : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
@@ -3505,35 +3527,35 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               title="Gestionnaire de Calques (Layers)"
             >
               <span className="material-symbols-outlined text-[19px]">layers</span>
-              <span className="font-mono text-[9px] mt-0.5">Calques</span>
+              <span className="font-mono text-[9px] mt-0.5 [@media(max-height:760px)]:hidden">Calques</span>
               {isSidebarLayersOpen && (
                 <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
               )}
             </button>
             <button
               onClick={() => setActiveRail(activeRail === 'layout' ? 'plan' : 'layout')}
-              className={`flex flex-col items-center justify-center py-2 px-1 rounded transition-colors ${
+              className={`flex flex-col items-center justify-center py-2 px-1 [@media(max-height:760px)]:py-1.5 rounded transition-colors ${
                 activeRail === 'layout' ? 'bg-surface-container-high text-secondary font-semibold' : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
               }`}
               title="Mise en page : planche, échelle et cartouche"
             >
               <span className="material-symbols-outlined text-[19px]">grid_view</span>
-              <span className="font-mono text-[9px] mt-0.5">Mise en page</span>
+              <span className="font-mono text-[9px] mt-0.5 [@media(max-height:760px)]:hidden">Mise en page</span>
             </button>
             <button
               onClick={onOpenExport}
-              className="flex flex-col items-center justify-center py-2 px-1 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors"
+              className="flex flex-col items-center justify-center py-2 px-1 [@media(max-height:760px)]:py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors"
               title="Rendu Visuel & Export"
             >
               <span className="material-symbols-outlined text-[19px]">photo_camera</span>
-              <span className="font-mono text-[9px] mt-0.5">Rendu</span>
+              <span className="font-mono text-[9px] mt-0.5 [@media(max-height:760px)]:hidden">Rendu</span>
             </button>
             <button
               onClick={() => {
                 setIsSidebarLibraryOpen(prev => !prev);
                 setRightDockTab('library');
               }}
-              className={`flex flex-col items-center justify-center py-2 px-1 rounded transition-colors relative ${
+              className={`flex flex-col items-center justify-center py-2 px-1 [@media(max-height:760px)]:py-1.5 rounded transition-colors relative ${
                 isSidebarLibraryOpen || rightDockTab === 'library'
                   ? 'bg-surface-container-high text-primary font-bold shadow-xs'
                   : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
@@ -3541,18 +3563,18 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               title="Bibliothèque de blocs de mobilier & menuiseries (B)"
             >
               <span className="material-symbols-outlined text-[19px]">category</span>
-              <span className="font-mono text-[9px] mt-0.5">Blocs</span>
+              <span className="font-mono text-[9px] mt-0.5 [@media(max-height:760px)]:hidden">Blocs</span>
               {isSidebarLibraryOpen && (
                 <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
               )}
             </button>
             <button
               onClick={() => setRightDockTab('props')}
-              className="flex flex-col items-center justify-center py-2 px-1 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors"
+              className="flex flex-col items-center justify-center py-2 px-1 [@media(max-height:760px)]:py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors"
               title="Configuration du projet"
             >
               <span className="material-symbols-outlined text-[19px]">settings</span>
-              <span className="font-mono text-[9px] mt-0.5">Config</span>
+              <span className="font-mono text-[9px] mt-0.5 [@media(max-height:760px)]:hidden">Config</span>
             </button>
           </nav>
 
@@ -3578,7 +3600,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         </aside>
 
         {/* Compact CAD Drafting Tools Strip */}
-        <aside className="w-11 bg-surface-container-lowest border-r border-outline-variant/20 flex flex-col items-center py-1 gap-1 z-30 shadow-md flex-none relative">
+        <aside className="w-11 bg-surface-container-lowest border-r border-outline-variant/20 flex flex-col items-center py-1 gap-1 [@media(max-height:780px)]:gap-0.5 z-30 shadow-md flex-none relative">
           {[
             { id: 'select', icon: 'near_me', key: 'V', title: 'Sélection & Manipulation (V)' },
             { id: 'pan', icon: 'pan_tool', key: 'Space', title: 'Panoramique / Déplacer la vue (Maintenir Espace ou Clic Molette)' },
@@ -3612,7 +3634,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     setActiveFlyout(prev => prev === t.id ? null : (t.id as any));
                   }
                 }}
-                className={`relative w-8 h-8 rounded flex items-center justify-center transition-colors ${
+                className={`relative w-8 h-8 [@media(max-height:780px)]:w-7 [@media(max-height:780px)]:h-7 rounded flex items-center justify-center transition-colors ${
                   !enabled
                     ? 'text-on-surface-variant/25 cursor-not-allowed'
                     : activeTool === t.id
@@ -3783,7 +3805,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           <button
             onClick={handleUndo}
             disabled={historyStack.length === 0 || activeRail !== 'plan'}
-            className="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high disabled:opacity-30 transition-colors"
+            className="w-8 h-8 [@media(max-height:780px)]:w-7 [@media(max-height:780px)]:h-7 rounded flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high disabled:opacity-30 transition-colors"
             title="Annuler dernière action (Ctrl+Z)"
           >
             <span className="material-symbols-outlined text-[17px]">undo</span>
@@ -3791,7 +3813,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           <button
             onClick={handleRedo}
             disabled={redoStack.length === 0 || activeRail !== 'plan'}
-            className="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high disabled:opacity-30 transition-colors"
+            className="w-8 h-8 [@media(max-height:780px)]:w-7 [@media(max-height:780px)]:h-7 rounded flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high disabled:opacity-30 transition-colors"
             title="Rétablir (Ctrl+Y)"
           >
             <span className="material-symbols-outlined text-[17px]">redo</span>
@@ -3801,7 +3823,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           <button
             onClick={handleDeleteSelected}
             disabled={selectedIds.length === 0}
-            className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
+            className={`w-8 h-8 [@media(max-height:780px)]:w-7 [@media(max-height:780px)]:h-7 rounded flex items-center justify-center transition-colors ${
               selectedIds.length > 0 ? 'text-error hover:bg-error/20 font-bold' : 'text-outline-variant opacity-30 cursor-not-allowed'
             }`}
             title="Supprimer les éléments sélectionnés (Suppr)"
@@ -3811,7 +3833,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         </aside>
 
         {/* LATERAL SIDEBAR LAYER MANAGER */}
-        {isSidebarLayersOpen && (
+        {isSidebarLayersOpen && !isRightDockOpen && (
           <LayerManager
             layers={layers}
             onToggleVisibility={handleToggleVisibility}
@@ -3823,7 +3845,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
         )}
 
         {/* LATERAL SIDEBAR LIBRARY DRAWER */}
-        {isSidebarLibraryOpen && (
+        {isSidebarLibraryOpen && !isRightDockOpen && (
           <aside className="w-84 bg-surface-container-lowest border-r border-outline-variant/30 flex flex-col z-30 shadow-2xl overflow-hidden flex-none">
             <CadLibraryPanel
               onInsertBlock={handleInsertBlock}
@@ -3917,62 +3939,11 @@ export const CadEditor: React.FC<CadEditorProps> = ({
               {/* Reactive Architectural Geometry Layer (1:1 CAD Coordinates) */}
               <svg className="absolute inset-0 w-full h-full overflow-visible">
                 <defs>
-                  {/* HACHURE BRIQUES: Running bond brick pattern */}
-                  <pattern id="hatch-briques" width="28" height="14" patternUnits="userSpaceOnUse">
-                    <rect width="28" height="14" fill="#0d1b2a" fillOpacity="0.6" />
-                    <line x1="0" y1="0" x2="28" y2="0" stroke="#f97316" strokeWidth="1" strokeOpacity="0.6" />
-                    <line x1="0" y1="7" x2="28" y2="7" stroke="#f97316" strokeWidth="1" strokeOpacity="0.6" />
-                    <line x1="0" y1="14" x2="28" y2="14" stroke="#f97316" strokeWidth="1" strokeOpacity="0.6" />
-                    <line x1="0" y1="0" x2="0" y2="7" stroke="#f97316" strokeWidth="1" strokeOpacity="0.6" />
-                    <line x1="14" y1="7" x2="14" y2="14" stroke="#f97316" strokeWidth="1" strokeOpacity="0.6" />
-                    <line x1="28" y1="0" x2="28" y2="7" stroke="#f97316" strokeWidth="1" strokeOpacity="0.6" />
-                  </pattern>
-
-                  {/* HACHURE BÉTON: Aggregates triangles + dots DIN standard */}
-                  <pattern id="hatch-beton" width="22" height="22" patternUnits="userSpaceOnUse">
-                    <rect width="22" height="22" fill="#0c1d2e" fillOpacity="0.6" />
-                    <polygon points="4,5 8,11 3,10" fill="none" stroke="#94a3b8" strokeWidth="0.8" strokeOpacity="0.75" />
-                    <polygon points="15,15 18,18 13,19" fill="none" stroke="#94a3b8" strokeWidth="0.8" strokeOpacity="0.75" />
-                    <circle cx="13" cy="7" r="0.9" fill="#94a3b8" fillOpacity="0.75" />
-                    <circle cx="6" cy="18" r="0.9" fill="#94a3b8" fillOpacity="0.75" />
-                    <circle cx="19" cy="11" r="0.7" fill="#94a3b8" fillOpacity="0.6" />
-                  </pattern>
-
-                  {/* HACHURE BOIS: Parquet oak wood slats */}
-                  <pattern id="hatch-bois" width="32" height="16" patternUnits="userSpaceOnUse">
-                    <rect width="32" height="16" fill="#141923" fillOpacity="0.6" />
-                    <line x1="0" y1="0" x2="32" y2="0" stroke="#f59e0b" strokeWidth="0.9" strokeOpacity="0.6" />
-                    <line x1="0" y1="8" x2="32" y2="8" stroke="#f59e0b" strokeWidth="0.9" strokeOpacity="0.6" />
-                    <line x1="0" y1="16" x2="32" y2="16" stroke="#f59e0b" strokeWidth="0.9" strokeOpacity="0.6" />
-                    <line x1="0" y1="0" x2="0" y2="8" stroke="#f59e0b" strokeWidth="0.9" strokeOpacity="0.6" />
-                    <line x1="16" y1="8" x2="16" y2="16" stroke="#f59e0b" strokeWidth="0.9" strokeOpacity="0.6" />
-                    <path d="M 4,4 Q 16,2 26,5" fill="none" stroke="#d97706" strokeWidth="0.6" strokeOpacity="0.35" />
-                    <path d="M 2,12 Q 14,10 28,13" fill="none" stroke="#d97706" strokeWidth="0.6" strokeOpacity="0.35" />
-                  </pattern>
-
-                  {/* HACHURE ISOLATION: Classic batt loops */}
-                  <pattern id="hatch-isolation" width="20" height="16" patternUnits="userSpaceOnUse">
-                    <rect width="20" height="16" fill="#101c28" fillOpacity="0.6" />
-                    <path d="M 0,8 Q 5,0 10,8 T 20,8" fill="none" stroke="#eab308" strokeWidth="1" strokeOpacity="0.65" />
-                    <line x1="0" y1="0" x2="20" y2="0" stroke="#ca8a04" strokeWidth="0.6" strokeDasharray="2 2" strokeOpacity="0.4" />
-                    <line x1="0" y1="16" x2="20" y2="16" stroke="#ca8a04" strokeWidth="0.6" strokeDasharray="2 2" strokeOpacity="0.4" />
-                  </pattern>
-
-                  {/* HACHURE CARRELAGE: Clean grid tile lines */}
-                  <pattern id="hatch-carrelage" width="18" height="18" patternUnits="userSpaceOnUse">
-                    <rect width="18" height="18" fill="#0d2438" fillOpacity="0.6" />
-                    <line x1="0" y1="0" x2="18" y2="0" stroke="#38bdf8" strokeWidth="0.8" strokeOpacity="0.55" />
-                    <line x1="0" y1="0" x2="0" y2="18" stroke="#38bdf8" strokeWidth="0.8" strokeOpacity="0.55" />
-                  </pattern>
-
-                  {/* HACHURE SABLE: Fine sand stipple */}
-                  <pattern id="hatch-sable" width="14" height="14" patternUnits="userSpaceOnUse">
-                    <rect width="14" height="14" fill="#151e28" fillOpacity="0.6" />
-                    <circle cx="3" cy="3" r="0.75" fill="#94a3b8" fillOpacity="0.65" />
-                    <circle cx="10" cy="4" r="0.6" fill="#94a3b8" fillOpacity="0.55" />
-                    <circle cx="6" cy="10" r="0.8" fill="#94a3b8" fillOpacity="0.65" />
-                    <circle cx="12" cy="11" r="0.6" fill="#94a3b8" fillOpacity="0.55" />
-                  </pattern>
+                  {/* Motifs de hachure standard + variantes personnalisées (échelle / couleur) des entités */}
+                  {HATCH_KINDS.map(k => <HatchPatternDef key={k} id={`hatch-${k}`} kind={k} />)}
+                  {entities
+                    .filter(e => e.hatchPattern && e.hatchPattern !== 'none' && ((e.hatchScale && e.hatchScale !== 1) || e.hatchColor))
+                    .map(e => <HatchPatternDef key={`hx-${e.id}`} id={`hatchx-${e.id}`} kind={e.hatchPattern as HatchKind} scale={e.hatchScale} color={e.hatchColor} />)}
                 </defs>
 
                 {/* 0. NIVEAU INFÉRIEUR EN FOND ESTOMPÉ (calage des murs de l'étage) */}
@@ -4025,7 +3996,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                           y={Math.min(ent.y1, ent.y2)}
                           width={w}
                           height={h}
-                          fill={`url(#hatch-${ent.hatchPattern})`}
+                          fill={`url(#${hatchPatternId(ent)})`}
                           fillOpacity={0.85}
                         />
                       )}
@@ -4286,7 +4257,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   const heightMm = Math.round(h * 10);
                   const areaM2 = ent.area || Math.round(((widthMm * heightMm) / 1000000) * 100) / 100;
                   const fillUrl = ent.hatchPattern && ent.hatchPattern !== 'none'
-                    ? `url(#hatch-${ent.hatchPattern})`
+                    ? `url(#${hatchPatternId(ent)})`
                     : 'rgba(56, 189, 248, 0.08)';
 
                   return (
@@ -4371,7 +4342,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   const dMm = rMm * 2;
                   const areaM2 = ent.area ?? Math.round(Math.PI * Math.pow(rMm / 1000, 2) * 100) / 100;
                   const fillUrl = ent.hatchPattern && ent.hatchPattern !== 'none'
-                    ? `url(#hatch-${ent.hatchPattern})`
+                    ? `url(#${hatchPatternId(ent)})`
                     : 'rgba(56, 189, 248, 0.08)';
 
                   return (
@@ -4434,7 +4405,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                   const pointsStr = pts.map(p => `${p.x},${p.y}`).join(' ');
                   const isClosed = ent.isClosed ?? true;
                   const fillUrl = isClosed && ent.hatchPattern && ent.hatchPattern !== 'none'
-                    ? `url(#hatch-${ent.hatchPattern})`
+                    ? `url(#${hatchPatternId(ent)})`
                     : isClosed
                     ? 'rgba(76, 215, 246, 0.08)'
                     : 'none';
@@ -6066,12 +6037,12 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           </div>
 
           {/* VIEWPORT SCALE / METADATA WATERMARK */}
-          <div className="absolute bottom-3 left-4 z-20 pointer-events-none flex flex-col gap-0.5">
+          <div className="absolute bottom-3 left-4 z-20 pointer-events-none flex flex-col gap-0.5 [@media(max-height:760px)]:hidden">
             <div className="text-[13px] text-on-surface/90 font-semibold tracking-tight">
-              PROJET : VILLA HORIZON
+              PROJET : {(projectInfo?.name ?? 'Villa Horizon').toUpperCase()}
             </div>
             <div className="font-mono text-[10px] text-outline">
-              PHASE : PERMIS DE CONSTRUIRE (PC) · ÉCHELLE 1:50 · RDC
+              PHASE : {(projectInfo?.phase ?? 'Permis de construire (PC)').toUpperCase()} · {activeLevel.name}
             </div>
             <div className="flex items-center gap-2 mt-1">
               <div className="h-1.5 w-16 bg-primary"></div>
@@ -6081,8 +6052,8 @@ export const CadEditor: React.FC<CadEditorProps> = ({
           </div>
 
           {/* VIEWPORT FLOATING CONTROLS & COMPASS */}
-          <div className="absolute top-3 right-3 flex flex-col items-end gap-2 z-20 pointer-events-auto">
-            {/* ViewCube */}
+          <div className={`absolute top-3 right-3 flex flex-col items-end gap-2 z-20 pointer-events-auto ${isRightDockOpen ? '' : 'mt-11'}`}>
+            {/* ViewCube (décalé sous le bouton « Propriétés » quand le dock est replié) */}
             <div className="w-14 h-14 bg-surface-container-lowest/90 backdrop-blur rounded flex flex-col items-center justify-center border border-outline-variant/30 shadow-md">
               <span className="font-mono text-[9px] text-primary font-bold">NORD</span>
               <div className="flex items-center justify-center my-0.5">
@@ -6130,7 +6101,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
 
         {/* 3. RIGHT MULTI-FUNCTIONAL DOCK (Tabbed: Propriétés, Bibliothèque, Calques, Archi AI Copilot) */}
         {isRightDockOpen ? (
-          <aside className={`bg-surface-container-lowest border-l border-outline-variant/20 flex flex-col z-30 shadow-xl overflow-hidden flex-none transition-all ${rightDockTab === 'library' ? 'w-88' : 'w-80'}`}>
+          <aside className={` bg-surface-container-lowest border-l border-outline-variant/20 flex flex-col z-30 shadow-xl overflow-hidden flex-none transition-all ${rightDockTab === 'library' ? 'w-80 xl:w-88' : 'w-72 xl:w-80'}`}>
             {/* Dock Tab Headers */}
             <div className="h-9 bg-surface-container-low flex items-center px-1 border-b border-outline-variant/20 flex-none gap-0.5">
               <button
@@ -6428,7 +6399,7 @@ export const CadEditor: React.FC<CadEditorProps> = ({
                     </button>
                     <button
                       onClick={async () => {
-                        const res = await ArckiCadAgent.processRequest('audit métrique et RE2020', entities);
+                        const res = await ArckiCadAgent.processRequest('audit métrique et RE2020', Object.values(entitiesByLevel).flat());
                         setCopilotMessages(prev => [...prev, { sender: 'assistant', text: res.reply }]);
                       }}
                       className="px-1.5 py-0.5 bg-surface-container hover:bg-surface-container-high rounded font-mono text-[9px] text-tertiary transition-colors"

@@ -1,5 +1,6 @@
 import { CadEntity, CadLevel } from './types.ts';
 import { slabOf } from './levels.ts';
+import { computeWallPolygons } from './wallGeometry.ts';
 
 /**
  * Projection des plans en façades (élévations) et coupes.
@@ -101,7 +102,9 @@ export function buildStrips(levelData: LevelData[], cut: Cut | null, viewDir: Di
   const result: Strip[] = [];
   const sideOf = (x: number, y: number) => (cut ? keepSide(cut, x, y) : 1);
 
-  levelData.forEach(({ level, walls: lvWalls, openings }) =>
+  levelData.forEach(({ level, walls: lvWalls, openings }) => {
+    // polygones des murs (angles en onglet, tés) : l'emprise réelle en façade tient compte de l'épaisseur aux angles
+    const polys = computeWallPolygons(lvWalls);
     lvWalls.forEach(w => {
       const thick = w.thickness || 200;
       const h = w.height || level.height;
@@ -142,7 +145,12 @@ export function buildStrips(levelData: LevelData[], cut: Cut | null, viewDir: Di
 
       const pa = project(viewDir, ax, ay), pb = project(viewDir, bx, by);
       let uMin = Math.min(pa.u, pb.u), uMax = Math.max(pa.u, pb.u);
-      if (uMax - uMin < thick) {
+      if (!crossing && polys[w.id]) {
+        // mur entier : emprise du polygone (épaisseur et raccords inclus)
+        const us = polys[w.id].map(q => project(viewDir, q.x, q.y).u);
+        uMin = Math.min(...us);
+        uMax = Math.max(...us);
+      } else if (uMax - uMin < thick) {
         const c = (uMin + uMax) / 2;
         uMin = c - thick / 2; uMax = c + thick / 2;
       }
@@ -176,8 +184,8 @@ export function buildStrips(levelData: LevelData[], cut: Cut | null, viewDir: Di
           });
         }
       }
-    })
-  );
+    });
+  });
 
   return result.sort((a, b) => b.depth - a.depth);
 }
